@@ -1,0 +1,10 @@
+_target_: models.model_interface.OURSModule
+params_model:
+  name: OURS
+  input_channel: 10
+  is_fillGap: true
+  is_OrthoAttention: true
+  output_channel: 4
+
+params_optim: ${optim}
+params_scheduler: ${scheduler}
