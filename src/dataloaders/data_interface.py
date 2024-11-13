@@ -14,6 +14,7 @@ class NS_DataModule(pl.LightningDataModule):
         n_train_test: list = [128, 32],
         b_train_test: list = [16, 16],
         num_workers: int = 4,
+        space_dim: list = [64, 64],
     ):
         super().__init__()
 

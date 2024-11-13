@@ -9,7 +9,7 @@ from einops import rearrange
 from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, IPOTEncoder, IPOTProcessor, IPOTDecoder
 from models.FNO import FNO2d
 from models.Ours import OursModel
-from models.DeepONet import DeepONet
+from models.MIONet import MIONet_periodic as MIONet
 import matplotlib.pyplot as plt
 from tools import LpLoss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
@@ -63,14 +63,25 @@ def get_model(cfg):
         )
     elif cfg.name == "FNO":
         model = FNO2d(cfg.modes, cfg.modes, cfg.latent_channel)
-    elif cfg.name == "DEEPONET":
-        model = DeepONet(n_branch=cfg.n_branch,
-                         width=cfg.width,
-                         depth=cfg.depth,
-                         p=cfg.p,
-                         act=cfg.act,
-                         n_trunk=cfg.n_trunk
-                         )
+    elif cfg.name == "MIONET":
+        sensors = int(torch.prod(torch.tensor(cfg.space_dim)) * \
+                      (1-cfg.missing_rate))
+        size = [sensors, 256, 256, 256, 256, 256, 256, 256]  # T slices as input functions
+        sizes = []
+        # for T history
+        for i in range(cfg.input_channel):
+            sizes.append(size)
+        # for 2D positions
+        for i in range(2): 
+            sizes.append(size)
+        # x,y
+        sizes.append(['p', 256, 256, 256, 256])
+        # t
+        sizes.append([1, 256, 256, 256, 256])
+        model = MIONet(sizes, 
+                       cfg.activation, 
+                       cfg.initializer
+                       )
     elif cfg.name == "OURS":
         model = OursModel(T_in=cfg.input_channel, 
                           is_fillGap=cfg.is_fillGap, 
@@ -280,7 +291,7 @@ class OURSModule(pl.LightningModule):
         return {"loss": loss}
 
 
-class DeepONetModule(pl.LightningModule):
+class MIONetModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -298,28 +309,56 @@ class DeepONetModule(pl.LightningModule):
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
         return [optimizer], [scheduler]
 
-    def step(self, batch: Any):
+    def step_(self, batch: Any):
         mask, pos, a, u = batch
-        B, HW, Ti = a.shape
-        aPos      = torch.concat([a, pos], dim=-1)
-        pos_pred  = pos
-        _, _,  To = u.shape
+        B, HW, Ti =   a.shape
+        To = 40
+        _,  _,  D = pos.shape
+        a_had    = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
         pred_trajectory = []
         loss = 0.
         for t in range(0, To):
             y = u[..., t:t+1]
-            pred = self.model(aPos, pos_pred)
+            inputs = []
+            for i in range(0, Ti):
+                inputs.append(  a_had[..., i])
+            for i in range(0, D):
+                inputs.append(pos_had[..., i])
+            inputs.append(pos[0].reshape(HW, D))
+            inputs.append(torch.tensor(1., device=a.device).repeat(1, HW, 1).reshape(HW, 1))
+            pred = self.model(inputs)
             loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
             pred_trajectory.append(pred)
-            a = torch.cat([a[..., 1:], pred], dim=-1)
+            a_had = torch.cat([a_had[..., 1:], pred[mask[..., 0:1].bool()].reshape(B, -1, 1)], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, full_loss, pred, u, B, To
+    
+    def step(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti =   a.shape
+        _,  _,  D = pos.shape
+        To        = 40
+        a_had    = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        inputs = []
+        for i in range(0, Ti):
+            inputs.append(  a_had[..., i])
+        for i in range(0, D):
+            inputs.append(pos_had[..., i])
+        inputs.append(pos[0].unsqueeze(dim=1).repeat(1, To, 1).reshape(HW*To, D))
+        inputs.append(torch.linspace(1, To, steps=To, device=a.device).reshape(1, To, 1).repeat(HW, 1, 1).reshape(HW*To, 1))
+        pred = self.model(inputs)
+        loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        full_loss = loss
         return loss, full_loss, pred, u, B, To
     
     def training_step(self, batch: Any, batch_idx: int):
         loss, full_loss, yhat, yref, B, To = self.step(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("train/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        #self.log("train/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("train/loss",           loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("train/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("train/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         return {"loss": loss}
@@ -327,7 +366,8 @@ class DeepONetModule(pl.LightningModule):
     def validation_step(self, batch: Any, batch_idx: int):
         loss, full_loss, yhat, yref, B, To = self.step(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("validation/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        #self.log("validation/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("validation/loss",           loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("validation/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("validation/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         return {"loss": loss}
@@ -335,7 +375,8 @@ class DeepONetModule(pl.LightningModule):
     def test_step(self, batch: Any, batch_idx: int):
         loss, full_loss, yhat, yref, B, To = self.step(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("test/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        #self.log("test/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("test/loss",           loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("test/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("test/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         return {"loss": loss}
