@@ -10,6 +10,7 @@ from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, 
 from models.FNO import FNO2d
 from models.Ours import OursModel
 from models.MIONet import MIONet_periodic as MIONet
+from models.OFORMER import OFormer
 import matplotlib.pyplot as plt
 from tools import LpLoss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
@@ -82,6 +83,19 @@ def get_model(cfg):
                        cfg.activation, 
                        cfg.initializer
                        )
+    elif cfg.name == "OFORMER":
+        model = OFormer(
+            cfg.in_channels,
+            cfg.encoder_emb_dim,
+            cfg.out_seq_emb_dim,
+            cfg.encoder_heads,
+            cfg.encoder_depth,
+            cfg.decoder_emb_dim,
+            cfg.out_channels,
+            cfg.out_step,
+            cfg.propagator_depth,
+            cfg.fourier_frequency,
+        )
     elif cfg.name == "OURS":
         model = OursModel(T_in=cfg.input_channel, 
                           is_fillGap=cfg.is_fillGap, 
@@ -379,4 +393,57 @@ class MIONetModule(pl.LightningModule):
         self.log("test/loss",           loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("test/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         self.log("test/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        return {"loss": loss}
+
+
+class OFormerModule(pl.LightningModule):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__()
+        self.save_hyperparameters()
+        self.cfg_model     = params_model
+        self.cfg_optim     = params_optim
+        self.cfg_scheduler = params_scheduler
+
+        self.model     = get_model(self.cfg_model)
+        self.criterion = LpLoss(size_average=False)
+        
+        self.is_sync_dist = torch.cuda.device_count() > 1
+    
+    def configure_optimizers(self):
+        optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
+        scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
+        return [optimizer], [scheduler]
+
+    def step(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
+        a_had    = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        pos_pred = pos
+        a = torch.cat([a_had, pos_had], dim=-1)
+        # input = [x, mesh]; x:[a+mesh], mesh.shape=(N, 2)
+        pred = self.model(a, pos_had, pos_pred, 40)
+        pred.reshape(u.shape)
+        loss = self.criterion(pred.view(B, -1), u.view(B, -1))
+        return loss, pred, u, B
+    
+    def training_step(self, batch: Any, batch_idx: int):
+        loss, yhat, yref, B = self.step(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
+        self.log("train/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("train/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        return {"loss": loss}
+
+    def validation_step(self, batch: Any, batch_idx: int):
+        loss, yhat, yref, B = self.step(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
+        self.log("validation/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("validation/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        return {"loss": loss}
+
+    def test_step(self, batch: Any, batch_idx: int):
+        loss, yhat, yref, B = self.step(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
+        self.log("test/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        self.log("test/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
         return {"loss": loss}
