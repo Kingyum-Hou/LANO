@@ -1,0 +1,12 @@
+_target_: models.model_interface.OURSModule
+params_model:
+  name: OURS
+  input_channel: 10
+  is_fillGap: true
+  is_OrthoAttention: true
+  output_channel: 1
+  ntrain: ${datamodule.n_train_test[0]}
+  ntest: ${datamodule.n_train_test[1]}
+
+params_optim: ${optim}
+params_scheduler: ${scheduler}

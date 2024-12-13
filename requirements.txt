@@ -1,0 +1,10 @@
+torch
+pytorch-lightning
+hydra-colorlog
+omegaconf
+wandb
+scipy
+torchprofile
+einops
+h5py
+pytorch-lightning

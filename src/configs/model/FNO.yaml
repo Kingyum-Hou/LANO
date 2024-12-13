@@ -1,0 +1,10 @@
+_target_: models.model_interface.FNOModule
+params_model:
+  name: FNO
+  input_channel: 10
+  output_channel: 1
+  latent_channel: 20
+  modes: 12
+
+params_optim: ${optim}
+params_scheduler: ${scheduler}
