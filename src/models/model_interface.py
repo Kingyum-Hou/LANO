@@ -608,18 +608,8 @@ class OFormerModule(pl.LightningModule):
         pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
         pos_pred  = pos
         aPos_had  = torch.concat([a_had, pos_had], dim=-1)
-        
         pred = self.model(aPos_had, pos_had, pos_pred, To)
         loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
-        return loss, pred, u, B
-
-    def training_step(self, batch: Any, batch_idx: int):
-        loss, _, _, B = self.step(batch)
-        self.log(
-            "train/loss", loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
         return {"loss": loss}
 
     def validation_step(self, batch: Any, batch_idx: int):

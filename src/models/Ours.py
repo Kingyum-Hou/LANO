@@ -708,12 +708,10 @@ class OursModel(nn.Module):
                 #z  = self.processor(z, input_pos, m2)
                 z  = self.processor(z, output_pos, m2)
                 #z_ = self.compress_feat(z)
-                #z_ = self.crossAttn(z, output_pos, input_pos)
                 y  = self.decoder(z)
-                y_trajectory.append(y)
-            y = torch.concat(y_trajectory, dim=-1)
-            return y
-        else:
+                z  = self.processor(z, input_pos, m2)
+                #z_ = self.compress_feat(z)
+                z_  = self.crossAttn(z, output_pos, input_pos)
             z  = self.processor(z, input_pos, m2)
             #z_ = self.compress_feat(z)
             y  = self.decoder(z_, output_pos, input_pos)
