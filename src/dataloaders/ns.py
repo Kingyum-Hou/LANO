@@ -59,6 +59,7 @@ def cubicInterp(data, mask):
         data_interp[i, ...] = data_padding_i[padding[0]:padding[0]+H, padding[1]:padding[1]+W, :]
         mask_interpInvalid_i = ((mask_padding_i==0.) & (data_padding_i==np.inf))[padding[0]:padding[0]+H, padding[1]:padding[1]+W, :]
         mask_interp[i, ...][mask_interpInvalid_i] = 0.
+    data_interp = rearrange(data_interp, 'B H W T -> B (H W) T')
     return data_interp, mask_interp
 
 
@@ -105,7 +106,15 @@ def get_NS(data_dir, num_train, num_test, task, missing_rate):
     elif task == "task2":
         pass
     elif task == "task3":
-        pass
+        num_sampling = int(np.round(missing_rate * 4096))
+        # train
+        train_au, train_mask = add_point_missing(train_au, num_sampling)
+        train_a  = train_au[..., :10]
+        train_u  = train_au[..., 10:]
+        # test
+        test_au_, test_mask = add_point_missing(test_au, num_sampling)
+        test_a   = test_au_[..., :10]
+        test_u   = test_au [...,  10:]
     elif task == "task0":
         train_mask = torch.ones_like(train_au)
         train_a  = train_au[..., :10]

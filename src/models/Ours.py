@@ -87,6 +87,7 @@ class GramSchmidtTransform(nn.Module):
     def forward(self, x, m):
         selected_constant_filter_ = self.gme4o(self.constant_filter, m)
         result = selected_constant_filter_ * x
+        #result = rearrange(self.constant_filter, 'C H W -> (H W) C') * x
         return result.sum(dim=(-2), keepdim=True).permute(0, 2, 1)
     
 
@@ -110,7 +111,7 @@ class MLP(nn.Module):
             act = ACTIVATION[act]
         else:
             raise NotImplementedError
-        self.n_input = n_input
+        self.n_input  = n_input
         self.n_hidden = n_hidden
         self.n_output = n_output
         self.n_layers = n_layers
@@ -195,7 +196,7 @@ class CrossLinearAttention(nn.Module):
         self.dim_head = dim_head
 
         # query is the classification token
-        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_q  = nn.Linear(dim, inner_dim, bias=False)
         self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
 
         if attn_type == 'galerkin':
@@ -277,10 +278,6 @@ class CrossLinearAttention(nn.Module):
     
 
     def forward(self, x, z, x_pos=None, z_pos=None):
-        # x (z^T z)
-        # x [b, n1, d]
-        # z [b, n2, d]
-        n1 = x.shape[1]   # x [b, n1, d]
         n2 = z.shape[1]   # z [b, n2, d]
 
         q = self.to_q(x)
@@ -444,7 +441,6 @@ class GaussianFourierFeatureTransform(torch.nn.Module):
 
         x = 2 * torch.math.pi * x
         return torch.cat([torch.sin(x), torch.cos(x)], dim=-1)
-    
 
 def gaussian_weighted_interpolation(dist, values, sigma=0.1): 
     weights = torch.exp(- (dist ** 2) / (2 * sigma ** 2))
@@ -486,7 +482,7 @@ class FGBlock(nn.Module):
         self.num_heads = num_heads
         self.is_fillGap = is_fillGap
     
-    def forward(self, z_o, m, p_o, dist):
+    def forward(self, z_o, p_o, dist):
         # observe p/q/k/v
         qkv_o = self.to_qkv(z_o).chunk(3, dim=-1)
         q_o, k_o, v_o = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads), qkv_o)
@@ -541,20 +537,16 @@ class SpatialFeatExtraction(nn.Module):
             ])
             self.blocks.append(block)
 
-    def forward(self, z, m, p, dist=None):
-        B = z.shape[0]
-        p = repeat(p, '... d -> b (...) d', b=B)
-        z_o = self.gme4o(z, m)
-        p_o = self.gme4o(repeat(p, 'b ... d -> b (...) d', b=z_o.shape[0]), m)
+    def forward(self, z_o, p_o, complete_pos, dist=None):
         if dist is None:
-            dist = torch.cdist(p, p_o)
+            dist = torch.cdist(complete_pos, p_o)
         for _, block in enumerate(self.blocks):
             ln1, fg_block, ln2, project = block
             z_o = ln1(z_o)
-            z_o = fg_block(z_o, m, p_o, dist) + z_o
+            z_o = fg_block(z_o, p_o, dist) + z_o
             z_o = ln2(z_o)
             z_o = project(z_o) + z_o
-        return z_o, p_o
+        return z_o
 
 
 class PreNorm(nn.Module):
@@ -576,17 +568,30 @@ class PreNorm(nn.Module):
     
 
 class FGEncoder(nn.Module):
-    def __init__(self, input_channels, embedding_channels, encoding_channels, num_layers, is_fillGap):
+    def __init__(
+        self, 
+        input_channels, 
+        embedding_channels, 
+        encoding_channels, 
+        num_layers, 
+        is_fillGap, 
+        scale
+    ):
         super().__init__()
-        self.temporalFeat_extract = nn.Linear(input_channels, embedding_channels)
-        self.spatialFeat_extract  = SpatialFeatExtraction(num_layers, [32, 16, 8], embedding_channels, is_fillGap)
-        self.project              = nn.Linear(embedding_channels, encoding_channels)
+        self.temporalFeat_extract = nn.Linear(input_channels, embedding_channels, bias=False)
+        self.spatialFeat_extract  = SpatialFeatExtraction(
+                                            num_layers, 
+                                            scale, 
+                                            embedding_channels, 
+                                            is_fillGap
+                                        )
+        self.project              = nn.Linear(embedding_channels, encoding_channels, bias=False)
         
-    def forward(self, x, m, p, dist=None):
+    def forward(self, x, input_pos, complete_pos, dist=None):
         z = self.temporalFeat_extract(x)
-        z, p = self.spatialFeat_extract(z, m, p, dist=dist)
+        z = self.spatialFeat_extract(z, input_pos, complete_pos, dist=dist)
         z = self.project(z)
-        return z, p
+        return z
     
 
 class TEProcessor(nn.Module):
@@ -615,13 +620,13 @@ class TEProcessor(nn.Module):
         self.weights = GramSchmidtTransform.build(encoding_channels, 64)
         self.is_OrthoAttention = is_OrthoAttention
 
-    def forward(self, z, p, m):
+    def forward(self, z, p, m2):
         for layer in self.temporal_evolution_layers:
             norm_fn, ffn = layer
             residual = z
             z = ffn(torch.cat([norm_fn(z), p], dim=-1))
             if self.is_OrthoAttention:
-                compressed = self.OrthoAttention(self.weights, z, m)
+                compressed = self.OrthoAttention(self.weights, z, m2)
                 b, _, c = z.shape
                 excitation = self._excitation(compressed).view(b, 1, c)
                 z = excitation * z
@@ -647,31 +652,21 @@ class SpatialInteraction(nn.Module):
         return x
 
 
-class Decoder(nn.Module):
-    def __init__(self, decoding_channels, attn_channels, num_heads, output_channels, scale=16., act='gelu', relative_emb_dim=2, min_freq=1/64, fourier_frequency=10):
+class CrossAttn(nn.Module):
+    def __init__(self, decoding_channels, num_heads, scale=16., act='gelu', relative_emb_dim=2, min_freq=1/64, fourier_frequency=10):
         super().__init__()
-        self.to_out = nn.Sequential(
-            nn.LayerNorm(decoding_channels),
-            nn.Linear(decoding_channels, decoding_channels//2, bias=False),
-            nn.GELU(),
-            nn.Linear(decoding_channels// 2, decoding_channels// 2, bias=False),
-            nn.GELU(),
-            nn.Linear(decoding_channels//2, output_channels, bias=True)
-        )
-        heads_channels = attn_channels//num_heads
+        heads_channels = decoding_channels//2
         self.coordinate_embedding = nn.Sequential(
             GaussianFourierFeatureTransform(2, decoding_channels//2, scale=fourier_frequency),
             nn.Linear(decoding_channels, decoding_channels, bias=False),
             ACTIVATION[act](),
-            nn.Linear(decoding_channels, decoding_channels, bias=False),
+            nn.Linear(decoding_channels, decoding_channels//2, bias=False),
         )
-        self.spatial_interaction = SpatialInteraction(decoding_channels, num_heads, heads_channels, relative_emb_dim, scale, min_freq=min_freq)
+        self.spatial_interaction = SpatialInteraction(decoding_channels//2, num_heads, heads_channels, relative_emb_dim, scale, min_freq=min_freq)
 
     def forward(self, z, output_pos, p_o):
-        output_pos = repeat(output_pos, '... d -> b (...) d', b=z.shape[0])
         x = self.coordinate_embedding(output_pos)
         y = self.spatial_interaction(x, z, output_pos, p_o)
-        y = self.to_out(y)
         return y
     
 
@@ -683,22 +678,41 @@ class OursModel(nn.Module):
                  outputs_timeStep=4
                  ):
         super().__init__()
-        self.encoder = FGEncoder(T_in+2, 64, 64, 3, is_fillGap=is_fillGap)
-        self.expand_feat = nn.Linear(64, 128, bias=False)
-        self.processor = TEProcessor(128, 2, is_OrthoAttention=is_OrthoAttention)
-        self.decoder = Decoder(128, 512, 4, outputs_timeStep)
+        self.encoder       = FGEncoder(T_in+2, 64, 128, 5, is_fillGap=is_fillGap, scale=[32, 16, 8, 8, 1])
+        self.expand_feat   = nn.Linear(128, 256, bias=True)
+        self.processor     = TEProcessor(256, 1, is_OrthoAttention=is_OrthoAttention)
+        #self.compress_feat = nn.Linear(256, 128, bias=True)
+        self.crossAttn     = CrossAttn(512, 4)
+        self.decoder       = nn.Sequential(
+            nn.LayerNorm(256),
+            nn.Linear(256, 128, bias=False),
+            nn.GELU(),
+            nn.Linear(128, 128, bias=False),
+            nn.GELU(),
+            nn.Linear(128, outputs_timeStep, bias=True),
+        )
 
-    def forward(self, x, m, output_pos, forward_steps, dist=None):
+
+    def forward(self, x, m, m2, input_pos, output_pos, complete_pos, forward_steps=None, dist=None):
         if x.dim()>3:
             x = rearrange(x, 'b ... c -> b (...) c')
-        p = output_pos.clone()
 
-        z, p = self.encoder(x, m, p, dist=dist)
-        z = self.expand_feat(z)
-        y_trajectory = []
-        for _ in range(forward_steps):
-            z = self.processor(z, p, m)
-            y = self.decoder(z, output_pos, p)
-            y_trajectory.append(y)
-        y = torch.concat(y_trajectory, dim=-1)
-        return y
+        z_ = self.encoder(x, input_pos, complete_pos, dist=dist)
+        #z  = self.crossAttn(z_, output_pos, input_pos)
+        z  = self.expand_feat(z_)
+        
+        if forward_steps is not None:
+            y_trajectory = []
+            for _ in range(forward_steps):
+                z  = self.processor(z, input_pos, m2)
+                #z_ = self.compress_feat(z)
+                z_  = self.crossAttn(z, output_pos, input_pos)
+                y  = self.decoder(z_)
+                y_trajectory.append(y)
+            y = torch.concat(y_trajectory, dim=-1)
+            return y
+        else:
+            z  = self.processor(z, input_pos, m2)
+            #z_ = self.compress_feat(z)
+            y  = self.decoder(z_, output_pos, input_pos)
+            return y

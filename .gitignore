@@ -166,3 +166,5 @@ tensorboard/
 logs/
 temp/
 main.log
+*.sh
+*.png

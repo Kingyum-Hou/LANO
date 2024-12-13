@@ -11,12 +11,13 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                "datamodule.task=task0",
-                "datamodule.missing_rate=0.05",
-                "model=OFORMER",
+                "datamodule.task=task3",
+                "datamodule.missing_rate=0.25",
+                "model=OURS",
                 "trainer.devices=[0]",
-                "datamodule.b_train_test=[4,4]",
-                "datamodule.n_train_test=[45,45]",
+                "datamodule.b_train_test=[3,3]",
+                "datamodule.n_train_test=[1000,100]",
+                "model.params_model.is_OrthoAttention=false",
             ],
             "justMyCode": true,
         }

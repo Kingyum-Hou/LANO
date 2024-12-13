@@ -283,7 +283,7 @@ class LinearAttention(nn.Module):
             score = torch.matmul(q, k.transpose(-1, -2))
             out = torch.matmul(score, v) * (1./q.shape[2])
         else:
-            dots = torch.matmul(k.transpose(-1, -2), v)
+            dots = torch.matmul(k.transpose(-1, -2), v)  # [B, H, 96, 96]
             out = torch.matmul(q, dots) * (1./q.shape[2])
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
@@ -793,7 +793,7 @@ class PointWiseDecoder2D(nn.Module):
             u = self.decode(z)
             history.append(u)
         history = torch.cat(history, dim=-1)  # concatenate in temporal dimension
-        return history  # [b, n, length_of_history*c]
+        return history  # [b, n, length_of_history*c]ruan
     
 
 class OFormer(nn.Module):

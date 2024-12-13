@@ -17,6 +17,16 @@ from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, Mult
 import torch.nn.functional as F
 
 
+def random_half_false_shared(mask):
+    B, N, T = mask.shape
+    for b in range(B):
+        true_indices = torch.nonzero(mask[b, :, 0], as_tuple=False).squeeze(1)  # 只取 t=0 的索引
+        num_to_flip = len(true_indices) // 2  # 抽取一半数量
+        indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]  # 随机抽取索引
+        mask[b, indices_to_flip, :] = False
+    return mask
+
+
 def get_model(cfg):
     if cfg.name == "IPOT":
         preprocessor = IPOTBasicPreprocessor(
@@ -262,8 +272,12 @@ class OURSModule(pl.LightningModule):
         self.cfg_optim     = params_optim
         self.cfg_scheduler = params_scheduler
 
-        self.model     = get_model(self.cfg_model)
-        self.criterion = LpLoss(size_average=False)
+        self.model      = get_model(self.cfg_model)
+        self.criterion  = LpLoss(size_average=False)
+
+        self.ntrain     = params_model.ntrain
+        self.ntest      = params_model.ntest
+        self.output_dim = params_model.output_channel
         
         self.is_sync_dist = torch.cuda.device_count() > 1
     
@@ -272,37 +286,157 @@ class OURSModule(pl.LightningModule):
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
         return [optimizer], [scheduler]
 
-    def step(self, batch: Any):
+    def step_1_(self, batch: Any):
+        # origin&Plus, rollout, 分别为一次4步和一次一步，Plus时without OrthoAttention
         mask, pos, a, u = batch
         B, HW, Ti = a.shape
         aPos    = torch.concat([a, pos], dim=-1)
         pos_pred = pos[0]
         # a=(NO, 12); pos=(N, 2)
-        pred = self.model(aPos, mask[..., 0], pos_pred, 10)
+        pred = self.model(aPos, mask[..., 0], pos_pred, 40)
         pred.reshape(u.shape)
         loss = self.criterion(pred.view(B, -1), u.view(B, -1))
         return loss, pred, u, B
     
+    def step_2_(self, batch: Any):
+        # pro, 一次4步，without OrthoAttention
+        mask, pos, a, u = batch
+        B, HW,Ti = a.shape
+        _, _, To = u.shape
+        pos_pred = pos[0]
+        pred_trajectory = []
+        loss = 0.
+        To = int(To/self.output_dim)
+        for t in range(0, To):
+            aPos    = torch.concat([a, pos], dim=-1)
+            y = u[..., t*self.output_dim:(t+1)*self.output_dim]
+            pred = self.model(aPos, mask[..., 0], pos_pred)
+            loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
+            pred_trajectory.append(pred)
+            a = torch.cat([a[..., self.output_dim:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, full_loss, pred, u, B, To
+    
+    def step_3_(self, batch: Any):
+        # task3实验代码，实验结果见ns_task3_Ours，表现不佳
+        mask, pos, a, u = batch
+        B, HW,Ti = a.shape
+        _, _, To = u.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_ = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_half_false_shared(mask_.clone())
+        agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        pred_trajectory = []
+        loss = 0.
+        To = int(To/self.output_dim)
+        for t in range(0, To):
+            agent_aPos = torch.concat([agent_a, agent_pos], dim=-1)
+            y          = u[..., t*self.output_dim:(t+1)*self.output_dim]
+            pred  = self.model(agent_aPos, agent_mask.squeeze(dim=-1), agent_pos, pos_pred, pos)
+            loss += self.criterion(
+                pred.view(B, -1), 
+                torch.masked_select(y, mask_.bool()).view(B, -1)
+            )
+            pred_trajectory.append(pred)
+            a = torch.cat([a[..., self.output_dim:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(
+            pred.view(B, -1), 
+            torch.masked_select(u, mask_.bool()).view(B, -1)
+        )
+        return loss, full_loss, pred, u, B, To
+    
+    def step(self, batch: Any):
+        # plus, task3, 
+        mask, pos, a, u = batch
+        B, HW,Ti = a.shape
+        _, _, To = u.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_ = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_half_false_shared(mask_.clone())
+        agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        agent_aPos = torch.concat([agent_a, agent_pos], dim=-1)
+        
+        pred = self.model(agent_aPos, agent_mask.squeeze(dim=-1), mask_.squeeze(dim=-1),
+                          agent_pos, pos_pred, pos, forward_steps=To)
+        loss = self.criterion(
+            pred.view(B, -1), 
+            torch.masked_select(u, mask_.bool()).view(B, -1)
+        )
+        return loss, None, pred, u, B, To
+
+    def rollout_(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
+        _,  _, To = u.shape
+        a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        pos_pred  = pos
+
+        pred_trajectory = []
+        loss = 0.
+        To = int(To/self.output_dim)
+        for t in range(0, To):
+            aPos_had = torch.concat([a_had, pos_had], dim=-1)
+            y = u[..., t*self.output_dim:(t+1)*self.output_dim]
+            pred = self.model(aPos_had, mask[..., 0],
+                              pos_had, pos_pred, pos)
+            loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
+            pred_trajectory.append(pred)
+            a_had = torch.cat([a_had[..., self.output_dim:], 
+                               pred[mask[..., :self.output_dim].bool()
+                                    ].reshape(B, -1, self.output_dim)
+                               ], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, full_loss, pred, u, B, To
+    
+    def rollout(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
+        _,  _, To = u.shape
+        a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        pos_pred  = pos
+        aPos_had  = torch.concat([a_had, pos_had], dim=-1)
+        
+        pred = self.model(aPos_had, mask[..., 0], torch.ones_like(mask[..., 0]),
+                          pos_had, pos_pred, pos, forward_steps=To)
+        loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, None, pred, u, B, To
+
     def training_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("train/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("train/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
+        full_loss, _, yhat, yref, B, To = self.step(batch)
+        self.log("train/loss",      full_loss/self.ntrain,
+                 sync_dist=self.is_sync_dist, on_step=False, on_epoch=True,
+                 reduce_fx=torch.sum)
+        self.log("train/full_loss", full_loss/self.ntrain, 
+                 sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, 
+                 reduce_fx=torch.sum)
+        return {"loss": full_loss}
 
     def validation_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("validation/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("validation/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
+        full_loss, _, yhat, yref, B, To= self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log("validation/loss",      full_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("validation/full_loss", full_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("validation/l2_loss",     l2_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        return {"loss": full_loss}
 
     def test_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("test/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("test/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
+        full_loss, _, yhat, yref, B, To = self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log("test/loss",      full_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("test/full_loss", full_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("test/l2_loss",     l2_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        return {"loss": full_loss}
 
 
 class MIONetModule(pl.LightningModule):
@@ -406,6 +540,9 @@ class OFormerModule(pl.LightningModule):
 
         self.model     = get_model(self.cfg_model)
         self.criterion = LpLoss(size_average=False)
+
+        self.ntrain     = params_model.ntrain
+        self.ntest      = params_model.ntest
         
         self.is_sync_dist = torch.cuda.device_count() > 1
     
@@ -417,33 +554,48 @@ class OFormerModule(pl.LightningModule):
     def step(self, batch: Any):
         mask, pos, a, u = batch
         B, HW, Ti = a.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_ = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_half_false_shared(mask_.clone())
+        agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
+        pred = self.model(agent_aPos, agent_pos, pos_pred, 40)
+        loss = self.criterion(
+            pred.view(B, -1),
+            torch.masked_select(u,    mask_.repeat(1, 1, 40).bool()).view(B, -1)
+        )
+        return loss, pred, u, B
+
+    def rollout(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
         a_had    = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
         pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
         pos_pred = pos
-        a = torch.cat([a_had, pos_had], dim=-1)
-        # input = [x, mesh]; x:[a+mesh], mesh.shape=(N, 2)
-        pred = self.model(a, pos_had, pos_pred, 40)
+        aPos_had = torch.cat([a_had, pos_had], dim=-1)
+        pred = self.model(aPos_had, pos_had, pos_pred, 40)
         pred.reshape(u.shape)
         loss = self.criterion(pred.view(B, -1), u.view(B, -1))
         return loss, pred, u, B
-    
+
     def training_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("train/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("train/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        loss, _, _, B = self.step(batch)
+        self.log("train/loss", loss/self.ntrain, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
         return {"loss": loss}
 
     def validation_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("validation/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("validation/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        loss, yhat, yref, B = self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log("validation/loss",       loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("validation/l2_loss", l2_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
         return {"loss": loss}
 
     def test_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("test/loss",    loss/B,  sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("test/l2_loss", l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
+        loss, yhat, yref, B = self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log("test/loss",       loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("test/l2_loss", l2_loss/self.ntest, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
         return {"loss": loss}
