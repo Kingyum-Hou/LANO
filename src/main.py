@@ -7,10 +7,8 @@ import requests
 from omegaconf import DictConfig
 from hydra.utils import instantiate
 from typing import (Optional, List)
-import dataloaders.data_interface as data_interface, models.model_interface as model_interface
 
 
-@hydra.main(version_base="1.2", config_path="configs", config_name="default")
 def train(cfg: DictConfig) -> Optional[float]:
     # Set seed
     pl.seed_everything(cfg.seed)
@@ -38,23 +36,26 @@ def train(cfg: DictConfig) -> Optional[float]:
     # Init trainer
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
     trainer.fit (model=model, datamodule=datamodule)
-    trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+    testLoss_dict = trainer.test(model=model, datamodule=datamodule, ckpt_path="best")[0]
 
     logger.experiment.finish()
 
     del datamodule, model, callbacks, trainer, logger
     gc.collect()
     torch.cuda.empty_cache()
-    
-    return cfg
+    return testLoss_dict
 
+
+@hydra.main(version_base="1.2", config_path="configs", config_name="default")
+def main(cfg: DictConfig) -> Optional[float]:
+    testLoss_dict = train(cfg)
+    requests.get(
+        cfg.bark_url +
+        f"ANOT_{cfg.model.params_model.name}_{cfg.tag}/" +
+        f"full_loss={testLoss_dict['test/loss']:.4f}" +
+        f"?sound={cfg.sound}"
+    )
+    
 
 if __name__ == '__main__':
-    cfg = train()
-    bark_url = "https://api.day.app/jxjT44t4wHkyz3dj8u5erE/"
-    requests.get(
-        bark_url +
-        "END!!!--" +
-        f"{cfg.model.params_model.name}_" +
-        f"{cfg.datamodule.missing_rate}"
-    )
+    main()

@@ -19,6 +19,17 @@ def add_point_missing(data, num_sampling):
         valid_mask[i, indices_addMissing, ...] = 0.
     return valid_data, valid_mask
 
+def add_patch_missing(data, num_sampling):
+    B, HW, T   = data.shape
+
+    valid_data = data.clone()
+    valid_mask = torch.ones_like(valid_data)
+    for i in range(B):
+        indices_addMissing = torch.randperm(HW)[:num_sampling]
+        valid_data[i, indices_addMissing, ...] = 0.
+        valid_mask[i, indices_addMissing, ...] = 0.
+    raise NotImplementedError
+    return valid_data, valid_mask
 
 def pad_periodic(data, padding):
     # padding H

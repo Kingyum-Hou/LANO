@@ -578,7 +578,14 @@ class OFormerModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
-        return [optimizer], [scheduler]
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step', 
+                'frequency': 1,
+            }
+        }
 
     def step(self, batch: Any):
         mask, pos, a, u = batch
@@ -671,8 +678,15 @@ class OFormerFillGapModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
-        return [optimizer], [scheduler]
-
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step', 
+                'frequency': 1,      
+            }
+        }
+    
     def step(self, batch: Any):
         mask, pos, a, u = batch
         B,  _, Ti = a.shape

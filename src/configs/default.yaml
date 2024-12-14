@@ -10,3 +10,6 @@ defaults:
   - trainer:    default
 
 seed: 123456
+sound: minuet
+tag:
+bark_url: https://api.day.app/jxjT44t4wHkyz3dj8u5erE/

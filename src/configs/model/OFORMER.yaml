@@ -1,4 +1,4 @@
-_target_: models.model_interface.OFormerModule
+_target_: model_interface.OFormerModule
 params_model:
   name: OFORMER
   in_channels: 12

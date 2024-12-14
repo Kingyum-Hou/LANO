@@ -11,12 +11,15 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
+                "datamodule=ns_v-5",
                 "datamodule.task=task3",
-                "datamodule.missing_rate=0.5",
+                "datamodule.missing_rate=0.2",
                 "model=OFORMER",
                 "trainer.devices=[0]",
-                "datamodule.b_train_test=[60,60]",
-                "datamodule.n_train_test=[100,100]",
+                "datamodule.b_train_test=[50,10]",
+                "datamodule.n_train_test=[1000,10]",
+                "trainer.max_epochs=10",
+                "tag=debug"
             ],
             "justMyCode": true,
         }
