@@ -13,12 +13,13 @@
             "args": [
                 "datamodule=ns_v-5",
                 "datamodule.task=task3",
-                "datamodule.missing_rate=0.2",
-                "model=OFORMER",
+                "datamodule.missing_rate=0.4",
+                "model=OFORMER_FILLGAP",
                 "trainer.devices=[0]",
-                "datamodule.b_train_test=[50,10]",
-                "datamodule.n_train_test=[1000,10]",
+                "datamodule.b_train_test=[40,40]",
+                "datamodule.n_train_test=[1000,200]",
                 "trainer.max_epochs=10",
+                "model.params_model.sigma=1.",
                 "tag=debug"
             ],
             "justMyCode": true,

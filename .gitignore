@@ -166,7 +166,6 @@ tensorboard/
 logs/
 temp/
 main.log
-*.sh
 *.png
 */__pycache__
 *.pyc

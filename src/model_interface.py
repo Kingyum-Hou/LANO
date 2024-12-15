@@ -120,6 +120,7 @@ def get_model(cfg):
             cfg.propagator_depth,
             cfg.fourier_frequency,
             is_fillGap=cfg.is_fillGap,
+            sigma=cfg.sigma,
         )
     elif cfg.name == "OURS":
         model = OursModel(

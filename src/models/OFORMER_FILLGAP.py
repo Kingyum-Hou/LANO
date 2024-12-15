@@ -115,17 +115,17 @@ class StandardAttention(nn.Module):
         return self.to_out(out)
 
 
-def gaussian_weighted_interpolation(dist, values, sigma=0.1): 
+def gaussian_weighted_interpolation(dist, values, sigma): 
     weights = torch.exp(- (dist ** 2) / (2 * sigma ** 2))
     weights /= weights.sum(dim=-1, keepdim=True)
     interpolated_values = torch.einsum('bhnc, bmn -> bhmc', values, weights)
     return interpolated_values
 
 
-def fill_gap_mut(k_o, v_o, dist):
+def fill_gap_mut(k_o, v_o, dist, sigma=0.1):
     dx = dy = 1.0 / 64
-    k_grid = gaussian_weighted_interpolation(dist, k_o)
-    v_grid = gaussian_weighted_interpolation(dist, v_o)
+    k_grid = gaussian_weighted_interpolation(dist, k_o, sigma=sigma)
+    v_grid = gaussian_weighted_interpolation(dist, v_o, sigma=sigma)
 
     dots = torch.einsum('bhnc, bhnd -> bhcnd', k_grid, v_grid)
     dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=64, W=64)
@@ -176,6 +176,7 @@ class LinearAttention(nn.Module):
             cat_pos=False,
             pos_dim=2,
             is_fillGap=False,
+            sigma=0.1,
         ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -185,6 +186,7 @@ class LinearAttention(nn.Module):
         self.heads = heads
         self.dim_head = dim_head
         self.is_fillGap = is_fillGap
+        self.sigma = sigma
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
 
@@ -305,7 +307,7 @@ class LinearAttention(nn.Module):
             score = torch.matmul(q, k.transpose(-1, -2))
             out = torch.matmul(score, v) * (1./q.shape[2])
         elif self.is_fillGap:
-            dots = fill_gap_mut(k, v, dist)
+            dots = fill_gap_mut(k, v, dist, sigma=self.sigma)
             out = torch.matmul(q, dots) * (1./q.shape[2])
         else:
             dots = torch.matmul(k.transpose(-1, -2), v)  # [B, H, 96, 96]
@@ -333,6 +335,7 @@ class TransformerCatNoCls(nn.Module):
             use_relu=False,
             cat_pos=False,
             is_fillGap=True,
+            sigma=0.1,
         ):
         super().__init__()
         assert attn_type in ['standard', 'galerkin', 'fourier']
@@ -368,7 +371,8 @@ class TransformerCatNoCls(nn.Module):
                         min_freq=min_freq,
                         init_method=attention_init,
                         init_gain=init_gain,
-                        is_fillGap=is_fillGap
+                        is_fillGap=is_fillGap,
+                        sigma=sigma
                     )
                 else:
                     attn_module = LinearAttention(
@@ -381,7 +385,7 @@ class TransformerCatNoCls(nn.Module):
                         pos_dim=relative_emb_dim,
                         relative_emb=False,
                         init_method=attention_init,
-                        init_gain=init_gain
+                        init_gain=init_gain,
                     )
                 if not use_ln:
                     self.layers.append(
@@ -432,6 +436,7 @@ class SpatialTemporalEncoder2D(nn.Module):
             heads,
             depth,                
             is_fillGap,
+            sigma,
         ):
         super().__init__()
 
@@ -450,7 +455,8 @@ class SpatialTemporalEncoder2D(nn.Module):
                 True, 
                 scale=[32, 16, 8, 8] + [1] * (depth - 4),
                 attention_init='orthogonal',
-                is_fillGap=is_fillGap
+                is_fillGap=is_fillGap,
+                sigma=sigma,
             )
         else:
             self.s_transformer = TransformerCatNoCls(
@@ -463,7 +469,8 @@ class SpatialTemporalEncoder2D(nn.Module):
                 True, 
                 scale=[32] + [16]*(depth-2) + [1],
                 attention_init='orthogonal',
-                is_fillGap=is_fillGap
+                is_fillGap=is_fillGap,
+                sigma=sigma,
             )
 
         self.project_to_latent = nn.Sequential(
@@ -870,7 +877,8 @@ class OFormerFillGap(nn.Module):
         out_step, 
         propagator_depth, 
         fourier_frequency, 
-        is_fillGap=True
+        is_fillGap=True,
+        sigma=0.1,
     ):
         super().__init__()
         self.encoder = SpatialTemporalEncoder2D(
@@ -879,7 +887,8 @@ class OFormerFillGap(nn.Module):
             out_seq_emb_dim,
             encoder_heads,
             encoder_depth,
-            is_fillGap
+            is_fillGap,
+            sigma,
         )
         self.decoder = PointWiseDecoder2D(
             decoder_emb_dim,
