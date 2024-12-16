@@ -12,7 +12,8 @@ params_model:
   propagator_depth: 1
   fourier_frequency: 8
   is_fillGap: True
-  sigma: 1.
+  r: 8
+  scale_factor: 2.
   ntrain: ${datamodule.n_train_test[0]}
   ntest:  ${datamodule.n_train_test[1]}
 params_optim: ${optim}

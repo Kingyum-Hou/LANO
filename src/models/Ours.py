@@ -232,7 +232,7 @@ class CrossLinearAttention(nn.Module):
         self.cat_pos = cat_pos
         self.pos_dim = pos_dim
 
-        self.relative_emb = relative_emb
+        self.relative_emb     = relative_emb
         self.relative_emb_dim = relative_emb_dim
         if relative_emb:
             self.emb_module = RotaryEmbedding(dim_head // self.relative_emb_dim, min_freq=min_freq, scale=scale)
@@ -449,20 +449,34 @@ def gaussian_weighted_interpolation(dist, values, sigma=0.1):
     return interpolated_values
 
 
-def fill_gap_mut(k_o, v_o, dist):
-    dx = dy = 1.0 / 64
-    k_grid = gaussian_weighted_interpolation(dist, k_o)
-    v_grid = gaussian_weighted_interpolation(dist, v_o)
+def fill_gap_mut(k_o, v_o, dist, scale_factor, r):
+    dx = dy = 1.0 / r
+    sigma = dx*scale_factor
+    k_grid = gaussian_weighted_interpolation(dist, k_o, sigma)
+    v_grid = gaussian_weighted_interpolation(dist, v_o, sigma)
 
     dots = torch.einsum('bhnc, bhnd -> bhcnd', k_grid, v_grid)
-    dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=64, W=64)
+    dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=r, W=r)
     integral_x  = torch.trapz(dots,       dx=dx, dim=-2)
     integral_xy = torch.trapz(integral_x, dx=dy, dim=-2)
     return integral_xy
 
 
 class FGBlock(nn.Module):
-    def __init__(self, embedding_channels, attn_channels, num_heads, fourier_frequency=10, min_freq=1/64, act='gelu', relative_emb_dim=2, is_fillGap=False, project_out=False):
+    def __init__(
+            self, 
+            embedding_channels, 
+            attn_channels, 
+            num_heads, 
+            fourier_frequency=10, 
+            min_freq=1/64, 
+            act='gelu', 
+            relative_emb_dim=2, 
+            is_fillGap=False, 
+            project_out=False,
+            scale_factor=2.,
+            r=8,
+        ):
         super().__init__()
         self.to_qkv = nn.Linear(embedding_channels, attn_channels*3, bias=False)
         #self.gme4m = GMEncoding(is_logicalNot=True)
@@ -481,6 +495,8 @@ class FGBlock(nn.Module):
         self.to_out = nn.Linear(attn_channels, embedding_channels) if project_out else nn.Identity()    
         self.num_heads = num_heads
         self.is_fillGap = is_fillGap
+        self.scale_factor = scale_factor
+        self.r = r
     
     def forward(self, z_o, p_o, dist):
         # observe p/q/k/v
@@ -505,7 +521,7 @@ class FGBlock(nn.Module):
 
         # fill-gap kv
         if self.is_fillGap:
-            dots = fill_gap_mut(k_o, v_o, dist)
+            dots = fill_gap_mut(k_o, v_o, dist, self.scale_factor, self.r)
         else:
             dots = torch.matmul(k_o.transpose(-1, -2), v_o)
         out = torch.matmul(q_o, dots) * (1./q_o.shape[2])
@@ -522,13 +538,21 @@ class FGBlock(nn.Module):
 
 
 class SpatialFeatExtraction(nn.Module):
-    def __init__(self, num_layers, scale, embedding_channels, is_fillGap):
+    def __init__(self, num_layers, scale, embedding_channels, is_fillGap, scale_factor, r):
         super().__init__()
         self.blocks = nn.ModuleList([])
         self.gme4o = GMEncoding()
         
         for layer_index in range(num_layers):
-            fg_block = FGBlock(embedding_channels, embedding_channels, 1, is_fillGap=is_fillGap, fourier_frequency=scale[layer_index])
+            fg_block = FGBlock(
+                embedding_channels, 
+                embedding_channels, 
+                1, 
+                is_fillGap=is_fillGap, 
+                fourier_frequency=scale[layer_index], 
+                scale_factor=scale_factor,
+                r=r,
+            )
             block = nn.ModuleList([
                 nn.LayerNorm(embedding_channels), 
                 fg_block, 
@@ -575,16 +599,20 @@ class FGEncoder(nn.Module):
         encoding_channels, 
         num_layers, 
         is_fillGap, 
-        scale
+        scale: list,
+        scale_factor: float = 2.,
+        r: int = 8,
     ):
         super().__init__()
         self.temporalFeat_extract = nn.Linear(input_channels, embedding_channels, bias=False)
         self.spatialFeat_extract  = SpatialFeatExtraction(
-                                            num_layers, 
-                                            scale, 
-                                            embedding_channels, 
-                                            is_fillGap
-                                        )
+                                        num_layers, 
+                                        scale, 
+                                        embedding_channels, 
+                                        is_fillGap,
+                                        scale_factor,
+                                        r,
+                                    )
         self.project              = nn.Linear(embedding_channels, encoding_channels, bias=False)
         
     def forward(self, x, input_pos, complete_pos, dist=None):
@@ -671,19 +699,22 @@ class CrossAttn(nn.Module):
     
 
 class OursModel(nn.Module):
-    def __init__(self, 
-                 T_in=10, 
-                 is_fillGap=True, 
-                 is_OrthoAttention=True, 
-                 outputs_timeStep=4
-                 ):
+    def __init__(
+            self, 
+            T_in=10, 
+            is_fillGap=True, 
+            is_OrthoAttention=True, 
+            outputs_timeStep=4,
+            scale_factor=2.,
+            r=8,
+        ):
         super().__init__()
-        self.encoder       = FGEncoder(T_in+2, 64, 128, 5, is_fillGap=is_fillGap, scale=[32, 16, 8, 8, 1])
+        self.encoder       = FGEncoder(T_in+2, 64, 128, 5, is_fillGap=is_fillGap, scale=[32, 16, 8, 8, 1], scale_factor=scale_factor, r=r)
         self.expand_feat   = nn.Linear(128, 256, bias=True)
         self.processor     = TEProcessor(256, 1, is_OrthoAttention=is_OrthoAttention)
         #self.compress_feat = nn.Linear(256, 128, bias=True)
-        #self.crossAttn     = CrossAttn(512, 4)
-        self.crossAttn     = CrossAttn(256, 4)
+        self.crossAttn     = CrossAttn(512, 4)
+        #self.crossAttn     = CrossAttn(256, 4)
         self.decoder       = nn.Sequential(
             nn.LayerNorm(256),
             nn.Linear(256, 128, bias=False),
@@ -694,16 +725,15 @@ class OursModel(nn.Module):
         )
 
 
-    def forward(self, x, m, m2, input_pos, output_pos, complete_pos, forward_steps=None, dist=None):
+    def forward(self, x, m2, input_pos, output_pos, complete_pos, dist=None):
         if x.dim()>3:
             x = rearrange(x, 'b ... c -> b (...) c')
 
         z_ = self.encoder(x, input_pos, complete_pos, dist=dist)
-        z_ = self.crossAttn(z_, output_pos, input_pos)
+        #z_ = self.crossAttn(z_, output_pos, input_pos)
         z  = self.expand_feat(z_)
-        
-        if forward_steps is not None:
-            y_trajectory = []
+        z  = self.processor(z, input_pos, m2)
+        """
             for _ in range(forward_steps):
                 #z  = self.processor(z, input_pos, m2)
                 z  = self.processor(z, output_pos, m2)
@@ -716,3 +746,8 @@ class OursModel(nn.Module):
             #z_ = self.compress_feat(z)
             y  = self.decoder(z_, output_pos, input_pos)
             return y
+        """
+        z = self.crossAttn(z, output_pos, input_pos)
+        #z_ = self.compress_feat(z)
+        y  = self.decoder(z)
+        return y

@@ -1,6 +1,5 @@
 import torch
 import pytorch_lightning as pl
-import numpy as np
 
 from typing import Any
 from omegaconf import DictConfig
@@ -120,15 +119,18 @@ def get_model(cfg):
             cfg.propagator_depth,
             cfg.fourier_frequency,
             is_fillGap=cfg.is_fillGap,
-            sigma=cfg.sigma,
+            scale_factor=cfg.scale_factor,
+            r=cfg.r,
         )
     elif cfg.name == "OURS":
         model = OursModel(
-                    T_in              = cfg.input_channel, 
-                    is_fillGap        = cfg.is_fillGap, 
-                    is_OrthoAttention = cfg.is_OrthoAttention, 
-                    outputs_timeStep  = cfg.output_channel,
-                )
+            T_in              = cfg.input_channel, 
+            is_fillGap        = cfg.is_fillGap, 
+            is_OrthoAttention = cfg.is_OrthoAttention, 
+            outputs_timeStep  = cfg.output_channel,
+            scale_factor      = cfg.scale_factor,
+            r                 = cfg.r,
+        )
     return model
 
 
@@ -301,7 +303,14 @@ class OURSModule(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
-        return [optimizer], [scheduler]
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step', 
+                'frequency': 1,
+            }
+        }
 
     def step_1_(self, batch: Any):
         # origin&Plus, rollout, 分别为一次4步和一次一步，Plus时without OrthoAttention
@@ -335,9 +344,8 @@ class OURSModule(pl.LightningModule):
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
         return loss, full_loss, pred, u, B, To
     
-    def step_3_(self, batch: Any):
-        # task3实验代码，实验结果见ns_task3_Ours，表现不佳
-        mask, pos, a, u = batch
+    def step(self, batch: Any):
+        mask, pos, a, u, pos_ref = batch
         B, HW,Ti = a.shape
         _, _, To = u.shape
         pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
@@ -353,7 +361,7 @@ class OURSModule(pl.LightningModule):
         for t in range(0, To):
             agent_aPos = torch.concat([agent_a, agent_pos], dim=-1)
             y          = u[..., t*self.output_dim:(t+1)*self.output_dim]
-            pred  = self.model(agent_aPos, agent_mask.squeeze(dim=-1), agent_pos, pos_pred, pos)
+            pred  = self.model(agent_aPos, agent_mask.squeeze(dim=-1), agent_pos, pos_pred, pos_ref)
             loss += self.criterion(
                 pred.view(B, -1), 
                 torch.masked_select(y, mask_.bool()).view(B, -1)
@@ -367,9 +375,9 @@ class OURSModule(pl.LightningModule):
         )
         return loss, full_loss, pred, u, B, To
     
-    def step(self, batch: Any):
+    def step_(self, batch: Any):
         # plus, task3, 
-        mask, pos, a, u = batch
+        mask, pos, a, u, pos_ref = batch
         B, HW,Ti = a.shape
         _, _, To = u.shape
         pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
@@ -382,15 +390,15 @@ class OURSModule(pl.LightningModule):
         agent_aPos = torch.concat([agent_a, agent_pos], dim=-1)
         
         pred = self.model(agent_aPos, agent_mask.squeeze(dim=-1), mask_.squeeze(dim=-1),
-                          agent_pos, pos_pred, pos, forward_steps=To)
+                          agent_pos, pos_pred, pos_ref, forward_steps=To)
         loss = self.criterion(
             pred.                                view(B, -1), 
             torch.masked_select(u, mask_.bool()).view(B, -1)
         )
         return loss, pred, u, B
 
-    def rollout_(self, batch: Any):
-        mask, pos, a, u = batch
+    def rollout(self, batch: Any):
+        mask, pos, a, u, pos_ref = batch
         B, HW, Ti = a.shape
         _,  _, To = u.shape
         a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
@@ -398,24 +406,26 @@ class OURSModule(pl.LightningModule):
         pos_pred  = pos
 
         pred_trajectory = []
-        loss = 0.
+        step_loss = 0.
         To = int(To/self.output_dim)
         for t in range(0, To):
             aPos_had = torch.concat([a_had, pos_had], dim=-1)
             y = u[..., t*self.output_dim:(t+1)*self.output_dim]
-            pred = self.model(aPos_had, mask[..., 0],
-                              pos_had, pos_pred, pos)
-            loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
+            pred = self.model(aPos_had, mask[..., 0], pos_had, pos_pred, pos_ref)
+            step_loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
             pred_trajectory.append(pred)
-            a_had = torch.cat([a_had[..., self.output_dim:], 
-                               pred[mask[..., :self.output_dim].bool()
-                                    ].reshape(B, -1, self.output_dim)
-                               ], dim=-1)
+            a_had = torch.cat(
+                [
+                    a_had[..., self.output_dim:], 
+                    pred[mask[..., :self.output_dim].bool()].reshape(B, -1, self.output_dim)
+                ], 
+                dim=-1
+            )
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
-        return loss, full_loss, pred, u, B, To
+        return step_loss, full_loss, pred, u, B, To
     
-    def rollout(self, batch: Any):
+    def rollout_(self, batch: Any):
         mask, pos, a, u = batch
         B, HW, Ti = a.shape
         _,  _, To = u.shape
@@ -430,20 +440,30 @@ class OURSModule(pl.LightningModule):
         return loss, pred, u, B
 
     def training_step(self, batch: Any, batch_idx: int):
-        loss, _, _, B = self.step(batch)
+        step_loss, full_loss, _, _, _, To = self.step(batch)
         self.log(
-            "train/loss", loss/self.ntrain,
+            "train/loss", full_loss/self.ntrain,
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": loss}
-
+        self.log(
+            "train/step_loss", step_loss/self.ntrain/To,
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        return {"loss": step_loss}
+    
     def validation_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.rollout(batch)
+        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "validation/loss", loss/self.ntest, 
+            "validation/loss", full_loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        self.log(
+            "validation/step_loss", step_loss/self.ntest/To,
+            sync_dist=self.is_sync_dist, on_step=False,
             on_epoch=True, reduce_fx=torch.sum
         )
         self.log(
@@ -451,14 +471,19 @@ class OURSModule(pl.LightningModule):
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": loss}
+        return {"loss": full_loss}
 
     def test_step(self, batch: Any, batch_idx: int):
-        loss, yhat, yref, B = self.rollout(batch)
+        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "test/loss", loss/self.ntest, 
+            "test/loss", full_loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        self.log(
+            "test/step_loss", step_loss/self.ntest/To,
+            sync_dist=self.is_sync_dist, on_step=False,
             on_epoch=True, reduce_fx=torch.sum
         )
         self.log(
@@ -466,7 +491,7 @@ class OURSModule(pl.LightningModule):
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": loss}
+        return {"loss": full_loss}
 
 
 class MIONetModule(pl.LightningModule):
@@ -689,7 +714,7 @@ class OFormerFillGapModule(pl.LightningModule):
         }
     
     def step(self, batch: Any):
-        mask, pos, a, u = batch
+        mask, pos, a, u, pos_ref = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
         pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
@@ -701,7 +726,7 @@ class OFormerFillGapModule(pl.LightningModule):
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
 
-        pred = self.model(agent_aPos, agent_pos, pos_pred, pos, To)
+        pred = self.model(agent_aPos, agent_pos, pos_pred, pos_ref, To)
         loss = self.criterion(
             pred.                                   view(B, -1),
             torch.masked_select(u,    mask_.bool()).view(B, -1)
@@ -709,7 +734,7 @@ class OFormerFillGapModule(pl.LightningModule):
         return loss, pred, u, B
 
     def rollout(self, batch: Any):
-        mask, pos, a, u = batch
+        mask, pos, a, u, pos_ref = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
         a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
@@ -717,7 +742,7 @@ class OFormerFillGapModule(pl.LightningModule):
         pos_pred  = pos
         aPos_had  = torch.concat([a_had, pos_had], dim=-1)
         
-        pred = self.model(aPos_had, pos_had, pos_pred, pos, To)
+        pred = self.model(aPos_had, pos_had, pos_pred, pos_ref, To)
         loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
         return loss, pred, u, B
 

@@ -122,13 +122,14 @@ def gaussian_weighted_interpolation(dist, values, sigma):
     return interpolated_values
 
 
-def fill_gap_mut(k_o, v_o, dist, sigma=0.1):
-    dx = dy = 1.0 / 64
+def fill_gap_mut(k_o, v_o, dist, scale_factor=2., r=64):
+    dx = dy = 1.0 / r
+    sigma = scale_factor * dx
     k_grid = gaussian_weighted_interpolation(dist, k_o, sigma=sigma)
     v_grid = gaussian_weighted_interpolation(dist, v_o, sigma=sigma)
 
     dots = torch.einsum('bhnc, bhnd -> bhcnd', k_grid, v_grid)
-    dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=64, W=64)
+    dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=int(r), W=int(r))
     integral_x  = torch.trapz(dots,       dx=dx, dim=-2)
     integral_xy = torch.trapz(integral_x, dx=dy, dim=-2)
     return integral_xy
@@ -176,7 +177,8 @@ class LinearAttention(nn.Module):
             cat_pos=False,
             pos_dim=2,
             is_fillGap=False,
-            sigma=0.1,
+            scale_factor=2.,
+            r=8.,
         ):
         super().__init__()
         inner_dim = dim_head * heads
@@ -186,7 +188,8 @@ class LinearAttention(nn.Module):
         self.heads = heads
         self.dim_head = dim_head
         self.is_fillGap = is_fillGap
-        self.sigma = sigma
+        self.scale_factor = scale_factor
+        self.r = r
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
 
@@ -307,7 +310,7 @@ class LinearAttention(nn.Module):
             score = torch.matmul(q, k.transpose(-1, -2))
             out = torch.matmul(score, v) * (1./q.shape[2])
         elif self.is_fillGap:
-            dots = fill_gap_mut(k, v, dist, sigma=self.sigma)
+            dots = fill_gap_mut(k, v, dist, scale_factor=self.scale_factor, r=self.r)
             out = torch.matmul(q, dots) * (1./q.shape[2])
         else:
             dots = torch.matmul(k.transpose(-1, -2), v)  # [B, H, 96, 96]
@@ -335,7 +338,8 @@ class TransformerCatNoCls(nn.Module):
             use_relu=False,
             cat_pos=False,
             is_fillGap=True,
-            sigma=0.1,
+            scale_factor=0.1,
+            r=8,
         ):
         super().__init__()
         assert attn_type in ['standard', 'galerkin', 'fourier']
@@ -372,7 +376,7 @@ class TransformerCatNoCls(nn.Module):
                         init_method=attention_init,
                         init_gain=init_gain,
                         is_fillGap=is_fillGap,
-                        sigma=sigma
+                        scale_factor=scale_factor,
                     )
                 else:
                     attn_module = LinearAttention(
@@ -436,7 +440,8 @@ class SpatialTemporalEncoder2D(nn.Module):
             heads,
             depth,                
             is_fillGap,
-            sigma,
+            scale_factor,
+            r,
         ):
         super().__init__()
 
@@ -456,7 +461,8 @@ class SpatialTemporalEncoder2D(nn.Module):
                 scale=[32, 16, 8, 8] + [1] * (depth - 4),
                 attention_init='orthogonal',
                 is_fillGap=is_fillGap,
-                sigma=sigma,
+                scale_factor=scale_factor,
+                r=r,
             )
         else:
             self.s_transformer = TransformerCatNoCls(
@@ -470,7 +476,8 @@ class SpatialTemporalEncoder2D(nn.Module):
                 scale=[32] + [16]*(depth-2) + [1],
                 attention_init='orthogonal',
                 is_fillGap=is_fillGap,
-                sigma=sigma,
+                scale_factor=scale_factor,
+                r=r,
             )
 
         self.project_to_latent = nn.Sequential(
@@ -878,7 +885,8 @@ class OFormerFillGap(nn.Module):
         propagator_depth, 
         fourier_frequency, 
         is_fillGap=True,
-        sigma=0.1,
+        scale_factor=2.,
+        r=8,
     ):
         super().__init__()
         self.encoder = SpatialTemporalEncoder2D(
@@ -888,7 +896,8 @@ class OFormerFillGap(nn.Module):
             encoder_heads,
             encoder_depth,
             is_fillGap,
-            sigma,
+            scale_factor,
+            r,
         )
         self.decoder = PointWiseDecoder2D(
             decoder_emb_dim,

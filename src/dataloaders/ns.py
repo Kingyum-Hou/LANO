@@ -75,7 +75,7 @@ def cubicInterp(data, mask):
     return data_interp, mask_interp
 
 
-def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate):
+def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate, ref):
     """
     Args:
         data_dir (string): dataset file path
@@ -109,6 +109,10 @@ def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate):
     pos       = torch2dgrid(64, 64).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
+
+    pos_ref   = torch2dgrid(ref, ref).unsqueeze(0).contiguous()
+    train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
+    test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
 
     # randomness
     if task == "task1":
@@ -145,15 +149,16 @@ def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate):
         test_u   = test_au[...,  10:]
     else:
         raise NotImplementedError
-    return (train_mask, train_pos, train_a, train_u), (test_mask, test_pos, test_a, test_u)
+    return (train_mask, train_pos, train_a, train_u, train_pos_ref), (test_mask, test_pos, test_a, test_u, test_pos_ref)
 
 
 class NSDataset(Dataset):
-    def __init__(self, mask, pos, a, u, task, is_train):
+    def __init__(self, mask, pos, a, u, pos_ref, task, is_train):
         self.mask     = mask
         self.pos      = pos
         self.a        = a
         self.u        = u
+        self.ref      = pos_ref
         self.task     = task
         self.is_train = is_train
     
@@ -165,4 +170,5 @@ class NSDataset(Dataset):
         pos  = self.pos [idx]
         a    = self.a   [idx]
         u    = self.u   [idx]
-        return mask, pos, a, u
+        ref  = self.ref [idx]
+        return mask, pos, a, u, ref
