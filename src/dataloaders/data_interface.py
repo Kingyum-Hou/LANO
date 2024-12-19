@@ -18,6 +18,7 @@ class NS_DataModule(pl.LightningDataModule):
         num_workers: int    = 4,
         space_dim: int      = 2,
         T_all: int          = 50,
+        downsample: int     = 1,
         ref: int            = 64,
     ):
         super().__init__()

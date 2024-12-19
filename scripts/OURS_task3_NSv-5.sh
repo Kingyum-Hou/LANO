@@ -5,8 +5,8 @@ nohup python -u src/main.py \
     model=OURS \
     trainer.devices=[0] \
     trainer.max_epochs=500 \
-    datamodule.b_train_test=[10,10] \
+    datamodule.b_train_test=[5,5] \
     model.params_model.scale_factor=2. \
-    model.params_model.r=32 \
-    tag=s2_r32 \
-    >> logs/NSv-5_task3_OURS_s2_r32.log 2>&1 & sleep 5s
+    model.params_model.r=64 \
+    tag=s2r64 \
+    >> logs/NSv-5_task3_OURS_s2r64.log 2>&1 & sleep 5s

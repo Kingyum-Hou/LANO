@@ -8,4 +8,5 @@ b_train_test: [10, 10]
 num_workers:  4
 space_dim:    [64, 64]
 T_all:        20
+downsample:   1
 ref:          ${model.params_model.r}
