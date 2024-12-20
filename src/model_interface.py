@@ -18,11 +18,12 @@ from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, Mult
 import torch.nn.functional as F
 
 
-def random_half_false_shared(mask):
+def random_false_shared(mask):
     B, N, T = mask.shape
+    num_observed = len(torch.nonzero(mask[0, :, 0], as_tuple=False))
+    num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()  # 随机抽取0-100%
     for b in range(B):
         true_indices = torch.nonzero(mask[b, :, 0], as_tuple=False).squeeze(1)  # 只取 t=0 的索引
-        num_to_flip  = len(true_indices) // 2  # 抽取一半数量
         indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]  # 随机抽取索引
         mask[b, indices_to_flip, :] = False
     return mask
@@ -624,7 +625,7 @@ class OFormerModule(pl.LightningModule):
 
         # agent mission
         mask_ = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_half_false_shared(mask_.clone())
+        agent_mask = random_false_shared(mask_.clone())
         agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -724,7 +725,7 @@ class OFormerFillGapModule(pl.LightningModule):
 
         # agent mission
         mask_ = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_half_false_shared(mask_.clone())
+        agent_mask = random_false_shared(mask_.clone())
         agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -825,12 +826,12 @@ class TransolverProModule(pl.LightningModule):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_half_false_shared(mask_.clone())
+        agent_mask = random_false_shared(mask_.clone())
         pred_trajectory = []
         loss = 0.
         To = int(To/self.output_dim)
         for t in range(0, To):
-            y     = yy[..., t*self.output_dim:(t+1)*self.output_dim]
+            y     = yy[..., t:t+1]
             pred  = self.model(pos, xx, agent_mask)
             loss += self.criterion(
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
@@ -858,7 +859,7 @@ class TransolverProModule(pl.LightningModule):
             pred = self.model(pos, xx, mask)
             step_loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
             pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., self.output_dim:], y], dim=-1)
+            xx = torch.cat([xx[..., self.output_dim:], pred], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
         return step_loss, full_loss, pred, yy, B, To

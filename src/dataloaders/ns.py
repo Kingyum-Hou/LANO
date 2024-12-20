@@ -147,6 +147,16 @@ def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate, ref):
         test_mask = torch.ones_like(test_au)
         test_a   = test_au[..., :10]
         test_u   = test_au[...,  10:]
+    elif task == "task4":
+        num_sampling = int(np.round(missing_rate * 4096))
+        # train
+        train_au_, train_mask = add_point_missing(train_au, num_sampling)
+        train_a  = train_au_[..., :10]
+        train_u  = train_au[..., 10:]
+        # test
+        test_au_, test_mask = add_point_missing(test_au, num_sampling)
+        test_a   = test_au_[..., :10]
+        test_u   = test_au [...,  10:]
     else:
         raise NotImplementedError
     return (train_mask, train_pos, train_a, train_u, train_pos_ref), (test_mask, test_pos, test_a, test_u, test_pos_ref)
