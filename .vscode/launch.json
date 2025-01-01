@@ -13,12 +13,14 @@
             "args": [
                 "datamodule=ns_v-5",
                 "datamodule.task=task3",
-                "datamodule.missing_rate=0.4",
-                "model=TransolverPro",
-                "trainer.devices=[0]",
-                "datamodule.b_train_test=[4,4]",
-                "datamodule.n_train_test=[200,48]",
-                "trainer.max_epochs=300",
+                "datamodule.missing_rate=0.5",
+                "model=Ours",
+                "trainer.devices=[1]",
+                "datamodule.b_train_test=[2,2]",
+                "datamodule.n_train_test=[20,4]",
+                "trainer.max_epochs=10",
+                "callback.model_checkpoint.monitor=train/full_loss",
+                "callback.early_stopping.monitor=train/full_loss",
                 "tag=debug"
             ],
             "justMyCode": true

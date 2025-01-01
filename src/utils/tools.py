@@ -271,3 +271,42 @@ class MatReader(object):
 
     def set_float(self, to_float):
         self.to_float = to_float
+
+
+def get_grid(H, W, ref, batchsize=1):
+        """
+        Generates a grid of positions and computes the Euclidean distance between 
+        each point in the grid and a reference grid.
+        Args:
+            H (int): Height of the grid.
+            W (int): Width of the grid.
+            ref (int): Size of the reference grid.
+            batchsize (int, optional): Batch size for the grid. Defaults to 1.
+        Returns:
+            torch.Tensor: A tensor containing the Euclidean distances between 
+                          each point in the grid and the reference grid. The shape 
+                          of the tensor is (batchsize, H, W, ref * ref).
+        ref to:
+        https://github.com/thuml/Transolver/blob/main/PDE-Solving-StandardBenchmark/model/Transolver_Structured_Mesh_2D.py#L138
+        """
+        size_x, size_y = H, W
+        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
+        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+        grid = torch.cat((gridx, gridy), dim=-1)  # B H W 2
+
+        gridx = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridx = gridx.reshape(1, ref, 1, 1).repeat([batchsize, 1, ref, 1])
+        gridy = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridy = gridy.reshape(1, 1, ref, 1).repeat([batchsize, ref, 1, 1])
+        grid_ref = torch.cat((gridx, gridy), dim=-1)  # B H W 8 8 2
+
+        pos = torch.sqrt(
+                    torch.sum(
+                        (grid[:, :, :, None, None, :] - \
+                        grid_ref[:, None, None, :, :, :]) ** 2, 
+                        dim=-1
+                    )
+                ).reshape(batchsize, size_x, size_y, ref * ref).contiguous()
+        return pos

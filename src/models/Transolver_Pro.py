@@ -164,7 +164,7 @@ class Physics_Attention_Irregular_Mesh(nn.Module):
         slice_weights_new, mask_new = self.conv(slice_weights_new, mask_new)
         slice_weights_new = slice_weights_new.reshape(B, 256, -1)
         slice_weights_new = rearrange(slice_weights_new, 'b (h g) N -> b h N g', h=8, g=32)
-        mask_new = rearrange(mask_new, 'b C H W -> b (H W) C')[..., :20]
+        mask_new = rearrange(mask_new, 'b C H W -> b (H W) C')[..., :1]
         out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights_new)
         out_x = rearrange(out_x, 'b h n c -> b n (h c)')
         return self.to_out(out_x), mask_new
@@ -212,27 +212,6 @@ class Transolver_block(nn.Module):
             return fx_mlp, new_mask
 
 
-"""
-class InterpolationBlock(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim, num_layers=2, act='relu'):
-        super().__init__()
-        layers = []
-        for _ in range(num_layers):
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            layers.append(ACTIVATION[act]())
-            input_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, output_dim))
-        self.model = nn.Sequential(*layers)
-        self.ln_3 = nn.LayerNorm(hidden_dim)
-        self.mlp2 = nn.Linear(hidden_dim, out_dim)
-
-    def forward(self, fx, pos):
-        fx_attn = self.Attn(self.ln_1(fx), pos) + fx
-        fx_mlp = self.mlp(self.ln_2(fx_attn)) + fx_attn
-        return self.mlp2(self.ln_3(fx_mlp))
-"""
-
-
 def adjust_mask(mask):
     B, _, N, _ = mask.shape
     min_mask_count = mask.sum(dim=2).min().item()
@@ -256,7 +235,7 @@ class TransovlerPro(nn.Module):
         self.H    = int(((args.space_dim[0]-1) / args.downsample) + 1)
         self.W    = int(((args.space_dim[1]-1) / args.downsample) + 1)
         self.S    = 2
-        self.ref  = args.r
+        self.ref  = args.ref
         self.unified_pos = args.unified_pos
         n_layers  = args.num_layers
         n_hidden  = args.hidden_size
@@ -334,6 +313,7 @@ class TransovlerPro(nn.Module):
     def forward(self, x, fx, mask=None):
         if self.unified_pos:
             x = self.pos.repeat(x.shape[0], 1, 1, 1).reshape(x.shape[0], self.H * self.W, self.ref * self.ref)
+            x = x.to(fx.device)
         if fx is not None:
             fx = rearrange(fx, 'b ... c -> b (...) c')
             fx = torch.cat((x, fx), -1)
@@ -341,12 +321,6 @@ class TransovlerPro(nn.Module):
         else:
             fx = self.preprocess(x)
             fx = fx + self.placeholder[None, None, :]
-
-        """
-        B, _, D = fx.shape
-        fx = torch.masked_select(fx, mask[..., 0:1].bool())
-        fx = fx.reshape(B, -1, D)
-        """
 
         for block in self.blocks:
             fx, mask  = block(fx, mask)

@@ -9,14 +9,13 @@ from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, 
 from models.FNO import FNO2d
 from models.Ours import OursModel
 from models.MIONet import MIONet_periodic as MIONet
-from models.OFormer import OFormer
-from models.backup.OFORMER import OFormer as OFormer_old
+from models.backup.OFORMER import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
 from models.Transolver_Pro import TransovlerPro
+import matplotlib.pyplot as plt
 from tools import LpLoss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
-import math
 
 
 def random_false_shared(mask):
@@ -96,8 +95,8 @@ def get_model(cfg):
                        cfg.activation, 
                        cfg.initializer
                        )
-    elif cfg.name == "OFormer_old":
-        model = OFormer_old(
+    elif cfg.name == "OFORMER":
+        model = OFormer(
             cfg.in_channels,
             cfg.encoder_emb_dim,
             cfg.out_seq_emb_dim,
@@ -109,8 +108,6 @@ def get_model(cfg):
             cfg.propagator_depth,
             cfg.fourier_frequency,
         )
-    elif cfg.name == "OFormer":
-        model = OFormer(cfg)
     elif cfg.name == "OFORMER_FILLGAP":
         model = OFormerFillGap(
             cfg.in_channels,
@@ -127,12 +124,17 @@ def get_model(cfg):
             scale_factor=cfg.scale_factor,
             r=cfg.r,
         )
+    elif cfg.name == "OURS":
+        model = OursModel(
+            T_in              = cfg.input_channel, 
+            is_fillGap        = cfg.is_fillGap, 
+            is_OrthoAttention = cfg.is_OrthoAttention, 
+            outputs_timeStep  = cfg.output_channel,
+            scale_factor      = cfg.scale_factor,
+            r                 = cfg.r,
+        )
     elif cfg.name == "TransolverPro":
         model = TransovlerPro(cfg)
-    elif cfg.name == "Ours":
-        model = OursModel(cfg)
-    else:
-        raise NotImplementedError
     return model
 
 
@@ -171,47 +173,7 @@ def get_scheduler(optimizer, cfg):
     return scheduler
 
 
-class ModuleTemplate(pl.LightningModule):
-    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
-        super().__init__()
-        self.save_hyperparameters()
-        self.cfg_model     = params_model
-        self.cfg_optim     = params_optim
-        self.cfg_scheduler = params_scheduler
-
-        self.model      = get_model(self.cfg_model)
-        self.criterion  = LpLoss(size_average=False)
-
-        self.ntrain     = params_model.ntrain
-        self.ntest      = params_model.ntest
-
-        self.is_sync_dist = torch.cuda.device_count() > 1
-    
-    def configure_optimizers(self):
-        optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
-        scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'step', 
-                'frequency': 1,
-            }
-        }
-
-    def training_step(self):
-        raise NotImplementedError
-    
-    def validation_step(self):
-        raise NotImplementedError
-
-    def test_step(self):
-        raise NotImplementedError
-
-    
-
-class IPOTModule(ModuleTemplate):
-    """
+class IPOTModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -228,7 +190,6 @@ class IPOTModule(ModuleTemplate):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
         return [optimizer], [scheduler]
-    """
 
     def step(self, batch: Any):
         mask, pos, a, u = batch
@@ -265,8 +226,7 @@ class IPOTModule(ModuleTemplate):
         return {"loss": loss}
 
 
-class FNOModule(ModuleTemplate):
-    """
+class FNOModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -283,7 +243,7 @@ class FNOModule(ModuleTemplate):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
         return [optimizer], [scheduler]
-    """
+
     def step(self, batch: Any):
         _, _, a, u = batch
         B, HW, Ti = a.shape
@@ -327,7 +287,7 @@ class FNOModule(ModuleTemplate):
         return {"loss": loss}
 
 
-class OURSModule_(pl.LightningModule):
+class OURSModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -356,6 +316,38 @@ class OURSModule_(pl.LightningModule):
             }
         }
 
+    def step_1_(self, batch: Any):
+        # origin&Plus, rollout, 分别为一次4步和一次一步，Plus时without OrthoAttention
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
+        aPos    = torch.concat([a, pos], dim=-1)
+        pos_pred = pos[0]
+        # a=(NO, 12); pos=(N, 2)
+        pred = self.model(aPos, mask[..., 0], pos_pred, 40)
+        pred.reshape(u.shape)
+        loss = self.criterion(pred.view(B, -1), u.view(B, -1))
+        return loss, pred, u, B
+    
+    def step_2_(self, batch: Any):
+        # pro, 一次4步，without OrthoAttention
+        mask, pos, a, u = batch
+        B, HW,Ti = a.shape
+        _, _, To = u.shape
+        pos_pred = pos[0]
+        pred_trajectory = []
+        loss = 0.
+        To = int(To/self.output_dim)
+        for t in range(0, To):
+            aPos    = torch.concat([a, pos], dim=-1)
+            y = u[..., t*self.output_dim:(t+1)*self.output_dim]
+            pred = self.model(aPos, mask[..., 0], pos_pred)
+            loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
+            pred_trajectory.append(pred)
+            a = torch.cat([a[..., self.output_dim:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, full_loss, pred, u, B, To
+    
     def step(self, batch: Any):
         mask, pos, a, u, pos_ref = batch
         B, HW,Ti = a.shape
@@ -387,6 +379,28 @@ class OURSModule_(pl.LightningModule):
         )
         return loss, full_loss, pred, u, B, To
     
+    def step_(self, batch: Any):
+        # plus, task3, 
+        mask, pos, a, u, pos_ref = batch
+        B, HW,Ti = a.shape
+        _, _, To = u.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_ = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_false_shared(mask_.clone())
+        agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        agent_aPos = torch.concat([agent_a, agent_pos], dim=-1)
+        
+        pred = self.model(agent_aPos, agent_mask.squeeze(dim=-1), mask_.squeeze(dim=-1),
+                          agent_pos, pos_pred, pos_ref, forward_steps=To)
+        loss = self.criterion(
+            pred.                                view(B, -1), 
+            torch.masked_select(u, mask_.bool()).view(B, -1)
+        )
+        return loss, pred, u, B
+
     def rollout(self, batch: Any):
         mask, pos, a, u, pos_ref = batch
         B, HW, Ti = a.shape
@@ -415,6 +429,20 @@ class OURSModule_(pl.LightningModule):
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
         return step_loss, full_loss, pred, u, B, To
     
+    def rollout_(self, batch: Any):
+        mask, pos, a, u = batch
+        B, HW, Ti = a.shape
+        _,  _, To = u.shape
+        a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        pos_pred  = pos
+        aPos_had  = torch.concat([a_had, pos_had], dim=-1)
+        
+        pred = self.model(aPos_had, mask[..., 0], torch.ones_like(mask[..., 0]),
+                          pos_had, pos_pred, pos, forward_steps=To)
+        loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, pred, u, B
+
     def training_step(self, batch: Any, batch_idx: int):
         step_loss, full_loss, _, _, _, To = self.step(batch)
         self.log(
@@ -470,8 +498,7 @@ class OURSModule_(pl.LightningModule):
         return {"loss": full_loss}
 
 
-class MIONetModule(ModuleTemplate):
-    """
+class MIONetModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -488,7 +515,7 @@ class MIONetModule(ModuleTemplate):
         optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
         scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
         return [optimizer], [scheduler]
-    """
+
     def step_(self, batch: Any):
         mask, pos, a, u = batch
         B, HW, Ti =   a.shape
@@ -562,8 +589,7 @@ class MIONetModule(ModuleTemplate):
         return {"loss": loss}
 
 
-class OFormerModule(ModuleTemplate):
-    """
+class OFormerModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -590,9 +616,9 @@ class OFormerModule(ModuleTemplate):
                 'frequency': 1,
             }
         }
-    """
+
     def step(self, batch: Any):
-        mask, pos, a, u, pos_ref = batch
+        mask, pos, a, u = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
         pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
@@ -604,39 +630,39 @@ class OFormerModule(ModuleTemplate):
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
 
-        pred      = self.model(agent_aPos, agent_pos, pos_pred, To)
-        full_loss = self.criterion(
+        pred = self.model(agent_aPos, agent_pos, pos_pred, To)
+        loss = self.criterion(
             pred.                                   view(B, -1),
             torch.masked_select(u,    mask_.bool()).view(B, -1)
         )
-        return full_loss, pred, u, B
+        return loss, pred, u, B
 
     def rollout(self, batch: Any):
-        mask, pos, a, u, pos_ref = batch
+        mask, pos, a, u = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
         a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
         pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
         pos_pred  = pos
         aPos_had  = torch.concat([a_had, pos_had], dim=-1)
-        pred      = self.model(aPos_had, pos_had, pos_pred, To)
-        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
-        return full_loss, pred, u, B
+        pred = self.model(aPos_had, pos_had, pos_pred, To)
+        loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, pred, u, B
     
     def training_step(self, batch: Any, batch_idx: int):
-        full_loss, _, _, B = self.step(batch)
+        loss, _, _, B = self.step(batch)
         self.log(
-            "train/full_loss", full_loss/self.ntrain, 
+            "train/loss", loss/self.ntrain, 
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": full_loss}
+        return {"loss": loss}
 
     def validation_step(self, batch: Any, batch_idx: int):
-        full_loss, yhat, yref, B = self.rollout(batch)
+        loss, yhat, yref, B = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "validation/full_loss", full_loss/self.ntest, 
+            "validation/loss", loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
@@ -645,13 +671,13 @@ class OFormerModule(ModuleTemplate):
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": full_loss}
+        return {"loss": loss}
 
     def test_step(self, batch: Any, batch_idx: int):
-        full_loss, yhat, yref, B = self.rollout(batch)
+        loss, yhat, yref, B = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "test/full_loss", full_loss/self.ntest, 
+            "test/loss", loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
@@ -660,11 +686,10 @@ class OFormerModule(ModuleTemplate):
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
-        return {"loss": full_loss}
+        return {"loss": loss}
 
 
-class TransolverProModule(ModuleTemplate):
-    """
+class OFormerFillGapModule(pl.LightningModule):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__()
         self.save_hyperparameters()
@@ -672,8 +697,8 @@ class TransolverProModule(ModuleTemplate):
         self.cfg_optim     = params_optim
         self.cfg_scheduler = params_scheduler
 
-        self.model      = get_model(self.cfg_model)
-        self.criterion  = LpLoss(size_average=False)
+        self.model     = get_model(self.cfg_model)
+        self.criterion = LpLoss(size_average=False)
 
         self.ntrain     = params_model.ntrain
         self.ntest      = params_model.ntest
@@ -688,10 +713,112 @@ class TransolverProModule(ModuleTemplate):
             'lr_scheduler': {
                 'scheduler': scheduler,
                 'interval': 'step', 
+                'frequency': 1,      
+            }
+        }
+    
+    def step(self, batch: Any):
+        mask, pos, a, u, pos_ref = batch
+        B,  _, Ti = a.shape
+        _,  _, To = u.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_ = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_false_shared(mask_.clone())
+        agent_a    = a  [agent_mask.repeat(1, 1, 10).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
+
+        pred = self.model(agent_aPos, agent_pos, pos_pred, pos_ref, To)
+        loss = self.criterion(
+            pred.                                   view(B, -1),
+            torch.masked_select(u,    mask_.bool()).view(B, -1)
+        )
+        return loss, pred, u, B
+
+    def rollout(self, batch: Any):
+        mask, pos, a, u, pos_ref = batch
+        B,  _, Ti = a.shape
+        _,  _, To = u.shape
+        a_had     = a  [mask[..., :10].bool()].reshape(B, -1, Ti)
+        pos_had   = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        pos_pred  = pos
+        aPos_had  = torch.concat([a_had, pos_had], dim=-1)
+        
+        pred = self.model(aPos_had, pos_had, pos_pred, pos_ref, To)
+        loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return loss, pred, u, B
+
+    def training_step(self, batch: Any, batch_idx: int):
+        loss, _, _, B = self.step(batch)
+        self.log(
+            "train/loss", loss/self.ntrain, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        return {"loss": loss}
+
+    def validation_step(self, batch: Any, batch_idx: int):
+        loss, yhat, yref, B = self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log(
+            "validation/loss", loss/self.ntest, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        self.log(
+            "validation/l2_loss", l2_loss/self.ntest, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        return {"loss": loss}
+
+    def test_step(self, batch: Any, batch_idx: int):
+        loss, yhat, yref, B = self.rollout(batch)
+        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
+        self.log(
+            "test/loss", loss/self.ntest, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        self.log(
+            "test/l2_loss", l2_loss/self.ntest, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.sum
+        )
+        return {"loss": loss}
+
+
+class TransolverProModule(pl.LightningModule):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__()
+        self.save_hyperparameters()
+        self.cfg_model     = params_model
+        self.cfg_optim     = params_optim
+        self.cfg_scheduler = params_scheduler
+
+        self.model      = get_model(self.cfg_model)
+        self.criterion  = LpLoss(size_average=False)
+
+        self.ntrain     = params_model.ntrain
+        self.ntest      = params_model.ntest
+        self.output_dim = params_model.output_channel
+        
+        self.is_sync_dist = torch.cuda.device_count() > 1
+    
+    def configure_optimizers(self):
+        optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
+        scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step', 
                 'frequency': 1,
             }
         }
-    """
+
     def step(self, batch: Any):
         mask, pos, xx, yy, pos_ref = batch
         B, HW,Ti = xx.shape
@@ -702,6 +829,7 @@ class TransolverProModule(ModuleTemplate):
         agent_mask = random_false_shared(mask_.clone())
         pred_trajectory = []
         loss = 0.
+        To = int(To/self.output_dim)
         for t in range(0, To):
             y     = yy[..., t:t+1]
             pred  = self.model(pos, xx, agent_mask)
@@ -710,7 +838,7 @@ class TransolverProModule(ModuleTemplate):
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
             pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], y], dim=-1)
+            xx = torch.cat([xx[..., self.output_dim:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(
             torch.masked_select(pred, mask_.bool()).view(B, -1), 
@@ -725,12 +853,13 @@ class TransolverProModule(ModuleTemplate):
 
         pred_trajectory = []
         step_loss       = 0.
+        To = int(To/self.output_dim)
         for t in range(0, To):
-            y    = yy[..., t:t+1]
+            y    = yy[..., t*self.output_dim:(t+1)*self.output_dim]
             pred = self.model(pos, xx, mask)
             step_loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
             pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+            xx = torch.cat([xx[..., self.output_dim:], pred], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
         return step_loss, full_loss, pred, yy, B, To
@@ -738,7 +867,7 @@ class TransolverProModule(ModuleTemplate):
     def training_step(self, batch: Any, batch_idx: int):
         step_loss, full_loss, _, _, _, To = self.step(batch)
         self.log(
-            "train/full_loss", full_loss/self.ntrain,
+            "train/loss", full_loss/self.ntrain,
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
@@ -753,7 +882,7 @@ class TransolverProModule(ModuleTemplate):
         step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "validation/full_loss", full_loss/self.ntest, 
+            "validation/loss", full_loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )
@@ -773,128 +902,7 @@ class TransolverProModule(ModuleTemplate):
         step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
         l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
         self.log(
-            "test/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/step_loss", step_loss/self.ntest/To,
-            sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
-
-
-class OursModule(ModuleTemplate):
-    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
-        super().__init__(params_model, params_optim, params_scheduler)
-        self.alpha = params_model.alpha
-        self.t     = params_model.t
-
-    def loss_surrogate(self, psi1, psi2):
-        B, C, F = psi1.shape
-        psi1 = psi1.div(psi1.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
-        psi2 = psi2.div(psi2.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
-        psi_K_psi_diag = (psi1 * psi2).sum(0)
-        psi2_d_K_psi1 = torch.einsum('bci, bcj -> cij', psi2.detach(), psi1)
-        psi1_d_K_psi2 = torch.einsum('bci, bcj -> cij', psi1.detach(), psi2)
-        loss = - psi_K_psi_diag.sum() * 2
-        reg  = (psi2_d_K_psi1 ** 2).triu(1).sum() + \
-               (psi1_d_K_psi2 ** 2).triu(1).sum()
-        loss /= psi_K_psi_diag.numel()
-        reg  /= psi_K_psi_diag.numel()
-        loss = loss + self.alpha*reg
-        return loss
-
-    def step(self, batch: Any):
-        mask, pos, xx, yy, pos_ref = batch
-        B, HW,Ti = xx.shape
-        _, _, To = yy.shape
-
-        # agent mission
-        mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone())
-        pred_trajectory = []
-        loss = 0.
-        for t in range(0, To):
-            y     = yy[..., t:t+1]
-            pred  = self.model(pos_ref, xx, agent_mask)
-            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            loss += self.criterion(
-                torch.masked_select(pred, mask_.bool()).view(B, -1), 
-                torch.masked_select(y,    mask_.bool()).view(B, -1)
-            )
-            loss += self.loss_surrogate(psi1, psi2)
-            pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], y], dim=-1)
-        pred = torch.cat(pred_trajectory, dim=-1)
-        full_loss = self.criterion(
-            torch.masked_select(pred, mask_.bool()).view(B, -1), 
-            torch.masked_select(yy,   mask_.bool()).view(B, -1)
-        )
-        return loss, full_loss, pred, yy, B, To
-    
-    def rollout(self, batch: Any):
-        mask, pos, xx, yy, pos_ref = batch
-        B, HW, Ti = xx.shape
-        _,  _, To = yy.shape
-
-        pred_trajectory = []
-        step_loss       = 0.
-        for t in range(0, To):
-            y    = yy[..., t:t+1]
-            pred = self.model(pos_ref, xx, mask[..., :1])
-            step_loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
-            pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], pred], dim=-1)
-        pred = torch.cat(pred_trajectory, dim=-1)
-        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
-        return step_loss, full_loss, pred, yy, B, To
-    
-    def training_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, _, _, _, To = self.step(batch)
-        self.log(
-            "train/full_loss", full_loss/self.ntrain,
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/step_loss", step_loss/self.ntrain/To,
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-    
-    def validation_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "validation/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/step_loss", step_loss/self.ntest/To,
-            sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
-
-    def test_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "test/full_loss", full_loss/self.ntest, 
+            "test/loss", full_loss/self.ntest, 
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.sum
         )

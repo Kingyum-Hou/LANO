@@ -3,6 +3,7 @@ import hydra
 import pytorch_lightning as pl
 import gc
 import requests
+import os
 
 from omegaconf import DictConfig
 from hydra.utils import instantiate
@@ -12,6 +13,7 @@ from typing import (Optional, List)
 def train(cfg: DictConfig) -> Optional[float]:
     # Set seed
     pl.seed_everything(cfg.seed)
+    print(f"Current PID: {os.getpid()}")
 
     # Set precision
     torch.set_float32_matmul_precision('high')
@@ -35,7 +37,7 @@ def train(cfg: DictConfig) -> Optional[float]:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
     # Init trainer
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
-    trainer.fit (model=model, datamodule=datamodule)
+    trainer.fit(model=model, datamodule=datamodule)
     testLoss_dict = trainer.test(model=model, datamodule=datamodule, ckpt_path="best")[0]
 
     logger.experiment.finish()
@@ -52,7 +54,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     requests.get(
         cfg.bark_url +
         f"ANOT_{cfg.model.params_model.name}_{cfg.tag}/" +
-        f"full_loss={testLoss_dict['test/loss']:.4f}" +
+        f"full_loss={testLoss_dict['test/full_loss']:.4f}" +
         f"?sound={cfg.sound}"
     )
     

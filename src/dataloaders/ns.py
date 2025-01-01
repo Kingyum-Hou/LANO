@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import torch2dgrid
+from tools import torch2dgrid, get_grid
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
@@ -75,26 +75,12 @@ def cubicInterp(data, mask):
     return data_interp, mask_interp
 
 
-def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate, ref):
-    """
-    Args:
-        data_dir (string): dataset file path
-        task (string): 
-            task 1: random n_points
-            task 2: random n_patches
-            task 3: random n_patches, without interpolation
-        sampling_rate (float): sampling rate
-    Returns:
-        train_indices (torch.tensor): (num_train, num_sampling) = (1000, 4096*sampling_rate)
-        train_pos (torch.tensor): (num_train, h, w, dim) = (1000, 1, 2)
-        train_a (torch.tensor): (num_train, h, w, T_in)  = (1000, 1, 10)
-        train_u (torch.tensor): (num_train, h, w, T_out) = (1000, 1, 10)
-        test_indices (torch.tensor): (num_test, num_sampling) = (200, 4096*sampling_rate)
-        test_pos  (torch.tensor): (num_test, h, w, dim) = (200,  1, 2)
-        test_a  (torch.tensor): (num_test, h, w, T_in)  = (200,  1, 10)
-        test_u  (torch.tensor): (num_test, h, w, T_out) = (200,  1, 10)
-    """
+def get_NS(
+        name, data_dir, num_train, num_test, space_size,
+        task, T_all, missing_rate, ref
+    ):
     # load data
+    H, W = space_size[0], space_size[1]
     if   name == "NS_v-5":
         data      = scio.loadmat(data_dir)['u']
         train_au  = torch.tensor(data[:num_train,   ::1, ::1, :T_all], dtype=torch.float).\
@@ -103,60 +89,60 @@ def get_NS(name, data_dir, num_train, num_test, task, T_all, missing_rate, ref):
             reshape(num_test,  -1, T_all)
     elif name == "NS_v-3":
         data      = h5py.File(data_dir)['u']
-        train_au  = torch.tensor(data[:T_all,   ::1, ::1, :num_train], dtype=torch.float).transpose(0, 3).reshape(num_train, -1, T_all)
-        test_au   = torch.tensor(data[:T_all,   ::1, ::1, -num_test:], dtype=torch.float).transpose(0, 3).reshape(num_test,  -1, T_all)
+        train_au  = torch.tensor(data[:T_all, ::1, ::1, :num_train], dtype=torch.float).transpose(0, 3).reshape(num_train, -1, T_all)
+        test_au   = torch.tensor(data[:T_all, ::1, ::1, -num_test:], dtype=torch.float).transpose(0, 3).reshape(num_test,  -1, T_all)
     
-    pos       = torch2dgrid(64, 64).unsqueeze(0).contiguous()
+    pos       = torch2dgrid(H, W).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
 
-    pos_ref   = torch2dgrid(ref, ref).unsqueeze(0).contiguous()
-    train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
-    test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
+    pos_ref   = get_grid(H, W, ref, batchsize=1).contiguous()
+    train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
+    test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 
-    # randomness
     if task == "task1":
         num_sampling = int(np.round(missing_rate * 4096))
         # train
         train_au, train_mask = add_point_missing(train_au, num_sampling)
-        train_a  = train_au[..., :10]
-        train_u  = train_au[..., 10:]
+        train_a  = train_au[...,   :10]
+        train_u  = train_au[..., 10:  ]
         # test
         test_au_, test_mask = add_point_missing(test_au, num_sampling)
-        test_a   = test_au_[..., :10]
-        test_u   = test_au [...,  10:]
+        test_a   = test_au_[...,   :10]
+        test_u   = test_au [..., 10:  ]
         # cubic interp for train
         train_u, _ = cubicInterp(train_u, train_mask[..., 10:])
     elif task == "task2":
-        pass
+        raise NotImplementedError
     elif task == "task3":
         num_sampling = int(np.round(missing_rate * 4096))
         # train
         train_au, train_mask = add_point_missing(train_au, num_sampling)
-        train_a  = train_au[..., :10]
-        train_u  = train_au[..., 10:]
+        train_a  = train_au[...,   :10]
+        train_u  = train_au[..., 10:  ]
         # test
-        test_au_, test_mask = add_point_missing(test_au, num_sampling)
-        test_a   = test_au_[..., :10]
-        test_u   = test_au [...,  10:]
+        #test_au_, test_mask = add_point_missing(test_au, num_sampling)
+        test_mask = torch.ones_like(test_au)
+        test_a    = test_au[...,   :10]
+        test_u    = test_au[..., 10:  ]
     elif task == "task0":
         train_mask = torch.ones_like(train_au)
-        train_a  = train_au[..., :10]
-        train_u  = train_au[..., 10:]
+        train_a    = train_au[...,   :10]
+        train_u    = train_au[..., 10:  ]
         # test
         test_mask = torch.ones_like(test_au)
-        test_a   = test_au[..., :10]
-        test_u   = test_au[...,  10:]
+        test_a    = test_au[...,   :10]
+        test_u    = test_au[..., 10:  ]
     elif task == "task4":
         num_sampling = int(np.round(missing_rate * 4096))
         # train
         train_au_, train_mask = add_point_missing(train_au, num_sampling)
-        train_a  = train_au_[..., :10]
-        train_u  = train_au[..., 10:]
+        train_a  = train_au_[...,   :10]
+        train_u  = train_au [..., 10:  ]
         # test
         test_au_, test_mask = add_point_missing(test_au, num_sampling)
-        test_a   = test_au_[..., :10]
-        test_u   = test_au [...,  10:]
+        test_a   = test_au_[...,   :10]
+        test_u   = test_au [..., 10:  ]
     else:
         raise NotImplementedError
     return (train_mask, train_pos, train_a, train_u, train_pos_ref), (test_mask, test_pos, test_a, test_u, test_pos_ref)
@@ -168,7 +154,7 @@ class NSDataset(Dataset):
         self.pos      = pos
         self.a        = a
         self.u        = u
-        self.ref      = pos_ref
+        self.pos_ref  = pos_ref
         self.task     = task
         self.is_train = is_train
     
@@ -176,9 +162,9 @@ class NSDataset(Dataset):
         return self.a.shape[0]
     
     def __getitem__(self, idx):
-        mask = self.mask[idx]
-        pos  = self.pos [idx]
-        a    = self.a   [idx]
-        u    = self.u   [idx]
-        ref  = self.ref [idx]
-        return mask, pos, a, u, ref
+        mask    = self.mask   [idx]
+        pos     = self.pos    [idx]
+        a       = self.a      [idx]
+        u       = self.u      [idx]
+        pos_ref = self.pos_ref[idx]
+        return mask, pos, a, u, pos_ref

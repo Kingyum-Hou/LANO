@@ -16,6 +16,7 @@ class NS_DataModule(pl.LightningDataModule):
         n_train_test: list  = [128, 32],
         b_train_test: list  = [16, 16],
         num_workers: int    = 4,
+        space_size: list    = [64, 64],
         space_dim: int      = 2,
         T_all: int          = 50,
         downsample: int     = 1,
@@ -31,9 +32,10 @@ class NS_DataModule(pl.LightningDataModule):
         self.num_workers  = num_workers
         self.T_all        = T_all
         self.ref          = ref
+        self.space_size   = space_size
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data = get_NS(self.name, self.data_dir, self.n_train, self.n_test, self.task, self.T_all, self.missing_rate, self.ref)
+        train_data, test_data = get_NS(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref)
         self.train_data = NSDataset(*train_data, self.task, is_train=True)
         self.test_data  = NSDataset(*test_data,  self.task, is_train=False)
         del train_data, test_data

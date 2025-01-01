@@ -8,7 +8,7 @@ nohup python -u src/main.py \
     model.params_model.scale_factor=4. \
     model.params_model.r=8. \
     tag=scale4_ref8 \
-    >> logs/NSv-5_task3_OFORMER-FILLGAP_scale=4_ref=8.log 2>&1 & sleep 5s
+    >> logs/NSv-5_task3_OFORMER-FILLGAP_scale=4_ref=8.log 2>&1 & sleep 5s &
 
 wait
 
