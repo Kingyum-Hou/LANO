@@ -8,6 +8,7 @@ from torch import Tensor
 from timm.models.layers import trunc_normal_
 from torch.nn.init import xavier_uniform_, constant_, xavier_normal_, orthogonal_
 import math
+from xformers.ops import memory_efficient_attention
 
 
 ACTIVATION = {'gelu':nn.GELU(),'tanh':nn.Tanh(),'sigmoid':nn.Sigmoid(),'relu':nn.ReLU(),'leaky_relu':nn.LeakyReLU(0.1),'softplus':nn.Softplus(),'ELU':nn.ELU()}
@@ -187,36 +188,42 @@ class Temperature(nn.Module):
 class KernelIntegrator(nn.Module):
     def __init__(self, hidden_size, feature_basis_num, heads_num):
         super().__init__()
+        head_size = hidden_size // heads_num
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
         self.feature_basis_projector = nn.Sequential(
-            MLP(hidden_size, hidden_size, feature_basis_num, n_layers=0, act='gelu', res=False),
+            MLP(head_size, head_size*2, feature_basis_num, n_layers=0, act='gelu', res=False),
+            Temperature(heads_num, temperature=0.5),
             nn.Softmax(dim=-1),
         )
         self.attn = nn.MultiheadAttention(embed_dim=feature_basis_num, num_heads=heads_num)
-        self.conv = PartialConv(feature_basis_num, feature_basis_num, 3, padding=1)
+        self.conv = PartialConv(heads_num*feature_basis_num, heads_num*feature_basis_num, 3, padding=1)
         self.last_mlp  = MLP(
             hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False
         )
         self.feature_basis_num = feature_basis_num
+        self.heads_num = heads_num
+        self.head_size = head_size
 
     def compute_feature_map(self, x, no_valid):
-        B, N, C = x.shape
+        x = rearrange(x, 'b n (h c) -> b h n c', c=self.head_size, h=self.heads_num)
         feature_basis = self.feature_basis_projector(x)
-        psi = torch.einsum("b n c, b n f -> b c f", x, feature_basis)
+        psi = torch.einsum("b h n c, b h n f -> b h c f", x, feature_basis)
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
         feature_basis = feature_basis.masked_fill(no_valid, 0.)
-        feature_basis_norm = feature_basis.sum(dim=1)
-        psi = psi / (feature_basis_norm + 1e-6)[:, None, :].repeat(1, C, 1)
+        feature_basis_norm = feature_basis.sum(dim=2)
+        psi = psi / (feature_basis_norm + 1e-6)[:, :, None, :].repeat(1, 1, self.head_size, 1)
         return psi, feature_basis
 
     def map_back_to_originalSpace(self, feature_basis, mask, psi):
-        feature_basis_new = rearrange(feature_basis, 'b (H W) F -> b F H W', H=64, W=64)
-        mask_new = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=64, W=64)
-        mask_new = mask_new.repeat(1, self.feature_basis_num, 1, 1)
+        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=64, W=64)
+        mask_new = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=64, W=64) 
+        mask_new = mask_new.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
         feature_basis_new, mask_new = self.conv(feature_basis_new, mask_new)
-        feature_basis_new = rearrange(feature_basis_new, 'b F H W -> b (H W) F')
-        mask_new          = rearrange(mask_new, 'b F H W -> b (H W) F')[..., :1]
-        x        = torch.einsum("b c f, b n f -> b n c", psi, feature_basis_new)
+        feature_basis_new = rearrange(feature_basis_new, 'b (h F) H W -> b h (H W) F', h=self.heads_num, F=self.feature_basis_num)
+        mask_new          = rearrange(mask_new, 'b c H W -> b (H W) c')[..., :1]
+        x = torch.einsum("b h c f, b h n f -> b h n c", psi, feature_basis_new)
+        x = rearrange(x, 'b h n c -> b n (h c)')
         return x, mask_new
 
     def get_psi(self, x, mask):
@@ -224,8 +231,7 @@ class KernelIntegrator(nn.Module):
         x = x.masked_fill(no_valid, 0.)
         
         # compute feature map
-        x_ = self.ln_1(x)
-        psi, _ = self.compute_feature_map(x_, no_valid)
+        psi, _ = self.compute_feature_map(self.ln_1(x), no_valid)
         return psi
 
     def forward(self, x, mask):
@@ -233,19 +239,17 @@ class KernelIntegrator(nn.Module):
         x = x.masked_fill(no_valid, 0.)
         
         # compute feature map
-        x_ = self.ln_1(x)
-        psi, feature_basis = self.compute_feature_map(x_, no_valid)
+        psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
 
         # conjugate operator
-        psi_trans = psi.permute(2, 0, 1)
-        psi_trans, _ = self.attn(psi_trans, psi_trans, psi_trans)
-        psi = psi_trans.permute(1, 2, 0)
+        query = key = value = psi
+        psi = memory_efficient_attention(query, key, value)
 
         # map back to original space
-        x_, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
+        x_new, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
 
         # mlp
-        x = x + x_
+        x = x + x_new
         x = self.last_mlp(self.ln_2(x)) + x
         return x, mask_new
 

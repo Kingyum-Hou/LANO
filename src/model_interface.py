@@ -797,12 +797,11 @@ class OursModule(ModuleTemplate):
         self.t     = params_model.t
 
     def loss_surrogate(self, psi1, psi2):
-        B, C, F = psi1.shape
         psi1 = psi1.div(psi1.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi2 = psi2.div(psi2.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi_K_psi_diag = (psi1 * psi2).sum(0)
-        psi2_d_K_psi1 = torch.einsum('bci, bcj -> cij', psi2.detach(), psi1)
-        psi1_d_K_psi2 = torch.einsum('bci, bcj -> cij', psi1.detach(), psi2)
+        psi2_d_K_psi1 = torch.einsum('bhci, bhcj -> hcij', psi2.detach(), psi1)
+        psi1_d_K_psi2 = torch.einsum('bhci, bhcj -> hcij', psi1.detach(), psi2)
         loss = - psi_K_psi_diag.sum() * 2
         reg  = (psi2_d_K_psi1 ** 2).triu(1).sum() + \
                (psi1_d_K_psi2 ** 2).triu(1).sum()
