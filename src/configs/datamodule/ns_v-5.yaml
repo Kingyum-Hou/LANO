@@ -1,6 +1,6 @@
 _target_:     dataloaders.data_interface.NS_DataModule
 name:         NS_v-5
-data_dir:     /data/jingren/repository/dataset/Physics-informed-neural-network/PDE_datasets/NavierStokes_V1e-5_N1200_T20.mat
+data_dir:     /root/autodl-tmp/NavierStokes_V1e-5_N1200_T20.mat
 task:         task1
 missing_rate: 0.5
 n_train_test: [1000, 200] # sst shape   (366, 901, 1001)

@@ -310,3 +310,10 @@ def get_grid(H, W, ref, batchsize=1):
                     )
                 ).reshape(batchsize, size_x, size_y, ref * ref).contiguous()
         return pos
+
+
+def check_model_parameters_isnan(model):
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            if torch.isnan(param.grad).any():
+                print(f"param:{name}'s grad is NaN")

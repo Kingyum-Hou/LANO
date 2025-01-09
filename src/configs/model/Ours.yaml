@@ -12,7 +12,7 @@ params_model:
   heads_num: 8
   kernel_layers: 8
   feature_basis_num: 32
-  alpha: 0.0025
+  alpha: 1e-4
   t: 10
 
 params_optim: ${optim}

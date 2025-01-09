@@ -14,14 +14,15 @@
                 "datamodule=ns_v-5",
                 "datamodule.task=task3",
                 "datamodule.missing_rate=0.5",
-                "model=Ours",
-                "trainer.devices=[1]",
+                "model=TransolverPro",
+                "trainer.devices=[2]",
+                "trainer.max_epochs=5",
                 "datamodule.b_train_test=[2,2]",
-                "datamodule.n_train_test=[20,4]",
-                "trainer.max_epochs=10",
+                "datamodule.n_train_test=[20,20]",
                 "callback.model_checkpoint.monitor=train/full_loss",
                 "callback.early_stopping.monitor=train/full_loss",
-                "tag=debug"
+                "tag=debug",
+                "model.params_model.alpha=1e-4",
             ],
             "justMyCode": true
         }

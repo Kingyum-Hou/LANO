@@ -197,7 +197,7 @@ class MIONet_periodic(torch.nn.Module):
     '''Multiple-input operator network (periodic).
     '''
     def __init__(self, sizes, activation='relu', initializer='default'):
-        super(MIONet_periodic, self).__init__()
+        super().__init__()
         self.sizes = sizes
         self.activation = activation
         self.initializer = initializer

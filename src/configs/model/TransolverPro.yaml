@@ -16,6 +16,8 @@ params_model:
   head_dim:     32
   hidden_size:  256
   mlp_ratio:    1
+  t: 10
+  alpha: 1e-4
 
   
 params_optim:     ${optim}

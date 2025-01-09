@@ -1,1 +1,163 @@
-bash: scripts/OFORMER-FILLGAP_test3_NSv-5_ref: No such file or directory
+Seed set to 123456
+Current PID: 7955
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: jingren-mh (jingren-mh-beijing-jiaotong-university). Use `wandb login --relogin` to force relogin
+wandb: - Waiting for wandb.init()...wandb: \ Waiting for wandb.init()...wandb: Tracking run with wandb version 0.19.1
+wandb: Run data is saved locally in logs/Ours_task3_0.5_None/wandb/run-20250105_175200-bt5drm16
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run jolly-sound-668
+wandb: ⭐️ View project at https://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT
+wandb: 🚀 View run at https://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT/runs/bt5drm16
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+
+  | Name  | Type      | Params | Mode 
+--------------------------------------------
+0 | model | OursModel | 10.7 M | train
+--------------------------------------------
+6.0 M     Trainable params
+4.7 M     Non-trainable params
+10.7 M    Total params
+42.849    Total estimated model params size (MB)
+171       Modules in train mode
+0         Modules in eval mode
+Error executing job with overrides: ['datamodule=ns_v-5', 'datamodule.task=task3', 'datamodule.missing_rate=0.5', 'model=Ours', 'trainer.devices=[0]', 'trainer.max_epochs=500', 'datamodule.n_train_test=[500,100]']
+Traceback (most recent call last):
+  File "/root/ANOT/src/main.py", line 53, in main
+    testLoss_dict = train(cfg)
+                    ^^^^^^^^^^
+  File "/root/ANOT/src/main.py", line 40, in train
+    trainer.fit(model=model, datamodule=datamodule)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 539, in fit
+    call._call_and_handle_interrupt(
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/call.py", line 47, in _call_and_handle_interrupt
+    return trainer_fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 575, in _fit_impl
+    self._run(model, ckpt_path=ckpt_path)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 982, in _run
+    results = self._run_stage()
+              ^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/trainer.py", line 1026, in _run_stage
+    self.fit_loop.run()
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/fit_loop.py", line 216, in run
+    self.advance()
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/fit_loop.py", line 455, in advance
+    self.epoch_loop.run(self._data_fetcher)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/training_epoch_loop.py", line 150, in run
+    self.advance(data_fetcher)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/training_epoch_loop.py", line 320, in advance
+    batch_output = self.automatic_optimization.run(trainer.optimizers[0], batch_idx, kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/optimization/automatic.py", line 192, in run
+    self._optimizer_step(batch_idx, closure)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/optimization/automatic.py", line 270, in _optimizer_step
+    call._call_lightning_module_hook(
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/call.py", line 171, in _call_lightning_module_hook
+    output = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/core/module.py", line 1302, in optimizer_step
+    optimizer.step(closure=optimizer_closure)
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/core/optimizer.py", line 154, in step
+    step_output = self._strategy.optimizer_step(self._optimizer, closure, **kwargs)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/strategies/strategy.py", line 239, in optimizer_step
+    return self.precision_plugin.optimizer_step(optimizer, model=model, closure=closure, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/plugins/precision/precision.py", line 123, in optimizer_step
+    return optimizer.step(closure=closure, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/optim/lr_scheduler.py", line 137, in wrapper
+    return func.__get__(opt, opt.__class__)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/optim/optimizer.py", line 487, in wrapper
+    out = func(*args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/optim/optimizer.py", line 91, in _use_grad
+    ret = func(self, *args, **kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/optim/adamw.py", line 197, in step
+    loss = closure()
+           ^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/plugins/precision/precision.py", line 109, in _wrap_closure
+    closure_result = closure()
+                     ^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/optimization/automatic.py", line 146, in __call__
+    self._result = self.closure(*args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 116, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/optimization/automatic.py", line 131, in closure
+    step_output = self._step_fn()
+                  ^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/loops/optimization/automatic.py", line 319, in _training_step
+    training_step_output = call._call_strategy_hook(trainer, "training_step", *kwargs.values())
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/trainer/call.py", line 323, in _call_strategy_hook
+    output = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/pytorch_lightning/strategies/strategy.py", line 391, in training_step
+    return self.lightning_module.training_step(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/ANOT/src/model_interface.py", line 859, in training_step
+    step_loss, full_loss, _, _, _, To = self.step(batch)
+                                        ^^^^^^^^^^^^^^^^
+  File "/root/ANOT/src/model_interface.py", line 825, in step
+    pred  = self.model(pos_ref, xx, agent_mask)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/ANOT/src/models/Ours.py", line 307, in forward
+    z, mask = block(z, mask)
+              ^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/ANOT/src/models/Ours.py", line 240, in forward
+    psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/ANOT/src/models/Ours.py", line 212, in compute_feature_map
+    feature_basis_norm = feature_basis.sum(dim=2)
+                         ^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 23.55 GiB of which 60.69 MiB is free. Including non-PyTorch memory, this process has 0 bytes memory in use. Of the allocated memory 22.72 GiB is allocated by PyTorch, and 319.71 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+[1;34mwandb[0m: 🚀 View run [33mjolly-sound-668[0m at: [34mhttps://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT/runs/bt5drm16[0m
+Seed set to 123456
+Current PID: 679417
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+wandb: Using wandb-core as the SDK backend.  Please refer to https://wandb.me/wandb-core for more information.
+wandb: Currently logged in as: jingren-mh (jingren-mh-beijing-jiaotong-university). Use `wandb login --relogin` to force relogin
+wandb: - Waiting for wandb.init()...wandb: \ Waiting for wandb.init()...wandb: Tracking run with wandb version 0.19.1
+wandb: Run data is saved locally in logs/Ours_task3_0.5_Ours_reg6/wandb/run-20250107_225646-5sjre8ia
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run fearless-wood-753
+wandb: ⭐️ View project at https://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT
+wandb: 🚀 View run at https://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT/runs/5sjre8ia
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0,1,2]
+
+  | Name  | Type      | Params | Mode 
+--------------------------------------------
+0 | model | OursModel | 11.2 M | train
+--------------------------------------------
+6.5 M     Trainable params
+4.7 M     Non-trainable params
+11.2 M    Total params
+44.954    Total estimated model params size (MB)
+179       Modules in train mode
+0         Modules in eval mode
+
+Detected KeyboardInterrupt, attempting graceful shutdown ...
+[1;34mwandb[0m: 🚀 View run [33mfearless-wood-753[0m at: [34mhttps://wandb.ai/jingren-mh-beijing-jiaotong-university/ANOT/runs/5sjre8ia[0m

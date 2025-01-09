@@ -13,7 +13,7 @@ from models.OFormer import OFormer
 from models.backup.OFORMER import OFormer as OFormer_old
 from models.OFORMER_FILLGAP import OFormerFillGap
 from models.Transolver_Pro import TransovlerPro
-from tools import LpLoss
+from tools import LpLoss, check_model_parameters_isnan
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
 import math
@@ -77,16 +77,16 @@ def get_model(cfg):
         )
     elif cfg.name == "FNO":
         model = FNO2d(cfg.modes, cfg.modes, cfg.latent_channel)
-    elif cfg.name == "MIONET":
-        sensors = int(torch.prod(torch.tensor(cfg.space_dim)) * \
+    elif cfg.name == "MIONet":
+        sensors = int(torch.prod(torch.tensor(cfg.space_size)) * \
                       (1-cfg.missing_rate))
         size = [sensors, 256, 256, 256, 256, 256, 256, 256]  # T slices as input functions
         sizes = []
         # for T history
-        for i in range(cfg.input_channel):
+        for _ in range(cfg.input_size):
             sizes.append(size)
         # for 2D positions
-        for i in range(2): 
+        for _ in range(2): 
             sizes.append(size)
         # x,y
         sizes.append(['p', 256, 256, 256, 256])
@@ -516,7 +516,7 @@ class MIONetModule(ModuleTemplate):
         return loss, full_loss, pred, u, B, To
     
     def step(self, batch: Any):
-        mask, pos, a, u = batch
+        mask, pos, a, u, _ = batch
         B, HW, Ti =   a.shape
         _,  _,  D = pos.shape
         To        = 40
@@ -664,34 +664,27 @@ class OFormerModule(ModuleTemplate):
 
 
 class TransolverProModule(ModuleTemplate):
-    """
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
-        super().__init__()
-        self.save_hyperparameters()
-        self.cfg_model     = params_model
-        self.cfg_optim     = params_optim
-        self.cfg_scheduler = params_scheduler
-
-        self.model      = get_model(self.cfg_model)
-        self.criterion  = LpLoss(size_average=False)
-
-        self.ntrain     = params_model.ntrain
-        self.ntest      = params_model.ntest
+        super().__init__(params_model, params_optim, params_scheduler)
+        self.alpha = params_model.alpha
+        self.t     = params_model.t
         
-        self.is_sync_dist = torch.cuda.device_count() > 1
+    def loss_surrogate(self, psi1, psi2):
+        psi1 = rearrange(psi1, 'b h f c -> b c (h f)')
+        psi2 = rearrange(psi2, 'b h f c -> b c (h f)')
+        psi1 = psi1.div(psi1.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
+        psi2 = psi2.div(psi2.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
+        psi_K_psi_diag = (psi1 * psi2).sum(0)
+        psi2_d_K_psi1 = torch.einsum('bci, bcj -> cij', psi2, psi1)
+        psi1_d_K_psi2 = torch.einsum('bci, bcj -> cij', psi1, psi2)
+        loss = - psi_K_psi_diag.sum() * 2
+        reg  = (psi2_d_K_psi1 ** 2).triu(1).sum() + \
+               (psi1_d_K_psi2 ** 2).triu(1).sum()
+        loss /= psi_K_psi_diag.numel()
+        reg  /= psi_K_psi_diag.numel()
+        loss = loss + self.alpha*reg
+        return loss
     
-    def configure_optimizers(self):
-        optimizer = get_optimizer(self.model.parameters(), self.cfg_optim)
-        scheduler = get_scheduler(optimizer,               self.cfg_scheduler)
-        return {
-            'optimizer': optimizer,
-            'lr_scheduler': {
-                'scheduler': scheduler,
-                'interval': 'step', 
-                'frequency': 1,
-            }
-        }
-    """
     def step(self, batch: Any):
         mask, pos, xx, yy, pos_ref = batch
         B, HW,Ti = xx.shape
@@ -709,6 +702,8 @@ class TransolverProModule(ModuleTemplate):
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
+            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
+            loss += self.loss_surrogate(psi1, psi2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
@@ -797,11 +792,13 @@ class OursModule(ModuleTemplate):
         self.t     = params_model.t
 
     def loss_surrogate(self, psi1, psi2):
+        psi1 = rearrange(psi1, 'b h f c -> b c (h f)')
+        psi2 = rearrange(psi2, 'b h f c -> b c (h f)')
         psi1 = psi1.div(psi1.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi2 = psi2.div(psi2.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi_K_psi_diag = (psi1 * psi2).sum(0)
-        psi2_d_K_psi1 = torch.einsum('bhci, bhcj -> hcij', psi2.detach(), psi1)
-        psi1_d_K_psi2 = torch.einsum('bhci, bhcj -> hcij', psi1.detach(), psi2)
+        psi2_d_K_psi1 = torch.einsum('bci, bcj -> cij', psi2, psi1)
+        psi1_d_K_psi2 = torch.einsum('bci, bcj -> cij', psi1, psi2)
         loss = - psi_K_psi_diag.sum() * 2
         reg  = (psi2_d_K_psi1 ** 2).triu(1).sum() + \
                (psi1_d_K_psi2 ** 2).triu(1).sum()
@@ -823,12 +820,12 @@ class OursModule(ModuleTemplate):
         for t in range(0, To):
             y     = yy[..., t:t+1]
             pred  = self.model(pos_ref, xx, agent_mask)
-            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
             loss += self.criterion(
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
-            loss += self.loss_surrogate(psi1, psi2)
+            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
+            loss += 0.1*self.loss_surrogate(psi1, psi2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
@@ -836,6 +833,7 @@ class OursModule(ModuleTemplate):
             torch.masked_select(pred, mask_.bool()).view(B, -1), 
             torch.masked_select(yy,   mask_.bool()).view(B, -1)
         )
+        check_model_parameters_isnan(self.model)
         return loss, full_loss, pred, yy, B, To
     
     def rollout(self, batch: Any):
