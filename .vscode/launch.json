@@ -12,16 +12,16 @@
             "console": "integratedTerminal",
             "args": [
                 "datamodule=ns_v-5",
-                "datamodule.task=task3",
+                "datamodule.task=task4",
+                "model.params_model.input_channel=10",
                 "datamodule.missing_rate=0.5",
-                "model=Ours",
-                "trainer.devices=[1]",
-                "datamodule.b_train_test=[2,2]",
-                "datamodule.n_train_test=[20,4]",
+                "datamodule.n_train_test=[1100,200]",
+                "model=IPOT",
+                "trainer.devices=[7]",
+                "datamodule.b_train_test=[3,3]",
                 "trainer.max_epochs=10",
-                "callback.model_checkpoint.monitor=train/full_loss",
-                "callback.early_stopping.monitor=train/full_loss",
-                "tag=debug"
+                "optim.lr=1e-4",
+                "tag=debug",
             ],
             "justMyCode": true
         }

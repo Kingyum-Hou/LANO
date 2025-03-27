@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import torch2dgrid, get_grid
+from tools import torch2dgrid, get_grid, reshape2blocks, reshape2data
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
@@ -19,16 +19,21 @@ def add_point_missing(data, num_sampling):
         valid_mask[i, indices_addMissing, ...] = 0.
     return valid_data, valid_mask
 
-def add_patch_missing(data, num_sampling):
-    B, HW, T   = data.shape
+def add_patch_missing(data, missing_rate, space_size, patch_size=4):
+    patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
+    total_patches = np.prod(patch_num)
+    patch_holes_num = int(np.round(total_patches * missing_rate))
+    B = data.shape[0]
 
-    valid_data = data.clone()
+    valid_data = reshape2blocks(data, patch_size, patch_num)
     valid_mask = torch.ones_like(valid_data)
     for i in range(B):
-        indices_addMissing = torch.randperm(HW)[:num_sampling]
-        valid_data[i, indices_addMissing, ...] = 0.
-        valid_mask[i, indices_addMissing, ...] = 0.
-    raise NotImplementedError
+        indices_addHoles = torch.randperm(total_patches)[:patch_holes_num]
+        valid_data[i, indices_addHoles, ...] = 0.
+        valid_mask[i, indices_addHoles, ...] = 0.
+    
+    valid_data = reshape2data(valid_data, patch_size, patch_num)
+    valid_mask = reshape2data(valid_mask, patch_size, patch_num)
     return valid_data, valid_mask
 
 def pad_periodic(data, padding):
@@ -121,10 +126,9 @@ def get_NS(
         train_a  = train_au[...,   :10]
         train_u  = train_au[..., 10:  ]
         # test
-        #test_au_, test_mask = add_point_missing(test_au, num_sampling)
-        test_mask = torch.ones_like(test_au)
-        test_a    = test_au[...,   :10]
-        test_u    = test_au[..., 10:  ]
+        test_au_, test_mask = add_point_missing(test_au, num_sampling)
+        test_a   = test_au_[...,   :10]
+        test_u   = test_au [..., 10:  ]
     elif task == "task0":
         train_mask = torch.ones_like(train_au)
         train_a    = train_au[...,   :10]
@@ -134,13 +138,12 @@ def get_NS(
         test_a    = test_au[...,   :10]
         test_u    = test_au[..., 10:  ]
     elif task == "task4":
-        num_sampling = int(np.round(missing_rate * 4096))
         # train
-        train_au_, train_mask = add_point_missing(train_au, num_sampling)
-        train_a  = train_au_[...,   :10]
-        train_u  = train_au [..., 10:  ]
+        train_au, train_mask = add_patch_missing(train_au, missing_rate, space_size, patch_size=4)
+        train_a  = train_au[...,   :10]
+        train_u  = train_au[..., 10:  ]
         # test
-        test_au_, test_mask = add_point_missing(test_au, num_sampling)
+        test_au_, test_mask = add_patch_missing(test_au, missing_rate, space_size, patch_size=4)
         test_a   = test_au_[...,   :10]
         test_u   = test_au [..., 10:  ]
     else:
@@ -167,4 +170,4 @@ class NSDataset(Dataset):
         a       = self.a      [idx]
         u       = self.u      [idx]
         pos_ref = self.pos_ref[idx]
-        return mask, pos, a, u, pos_ref
+        return mask, pos, a, u, pos_ref, self.task

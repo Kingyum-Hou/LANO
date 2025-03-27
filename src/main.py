@@ -8,6 +8,10 @@ import os
 from omegaconf import DictConfig
 from hydra.utils import instantiate
 from typing import (Optional, List)
+import logging
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('cfgrib').setLevel(logging.WARNING)
+logging.getLogger("fsspec.local").setLevel(logging.WARNING)
 
 
 def train(cfg: DictConfig) -> Optional[float]:
@@ -35,6 +39,7 @@ def train(cfg: DictConfig) -> Optional[float]:
     for _, cfg_logger in cfg.logger.items():
         if "_target_" in cfg_logger:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
+
     # Init trainer
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
     trainer.fit(model=model, datamodule=datamodule)
@@ -53,11 +58,11 @@ def main(cfg: DictConfig) -> Optional[float]:
     testLoss_dict = train(cfg)
     requests.get(
         cfg.bark_url +
-        f"ANOT_{cfg.model.params_model.name}_{cfg.tag}/" +
+        f"ANOT_{cfg.datamodule.name}_{cfg.datamodule.task}_{cfg.datamodule.missing_rate}_{cfg.model.params_model.name}_{cfg.tag}/" +
         f"full_loss={testLoss_dict['test/full_loss']:.4f}" +
         f"?sound={cfg.sound}"
     )
-    
+ 
 
 if __name__ == '__main__':
     main()

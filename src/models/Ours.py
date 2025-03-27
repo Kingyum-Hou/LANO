@@ -1,12 +1,8 @@
 from __future__ import annotations
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat, einsum
-from torch.nn.utils.rnn import pad_sequence
-from typing import Optional, Dict
-from torch import Tensor
-from timm.models.layers import trunc_normal_
-from torch.nn.init import xavier_uniform_, constant_, xavier_normal_, orthogonal_
+from einops import rearrange, repeat
+from timm.layers import trunc_normal_
 import math
 from xformers.ops import memory_efficient_attention
 
@@ -144,7 +140,7 @@ class ApplyRotaryEmbedding():
         self.name = 'rotaryEmbedding'
         self.space_dim = space_dim
 
-    def rotate_half(x):
+    def rotate_half(self, x):
         x = rearrange(x, '... (j d) -> ... j d', j = 2)
         x1, x2 = x.unbind(dim = -2)
         return torch.cat((-x2, x1), dim = -1)
@@ -186,43 +182,45 @@ class Temperature(nn.Module):
 
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, feature_basis_num, heads_num):
+    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size):
         super().__init__()
         head_size = hidden_size // heads_num
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
         self.feature_basis_projector = nn.Sequential(
-            MLP(head_size, head_size*2, feature_basis_num, n_layers=0, act='gelu', res=False),
+            MLP(head_size, head_size, feature_basis_num, n_layers=0, act='gelu', res=False),
             Temperature(heads_num, temperature=0.5),
             nn.Softmax(dim=-1),
         )
-        self.attn = nn.MultiheadAttention(embed_dim=feature_basis_num, num_heads=heads_num)
+        #self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
+        self.to_out = nn.Linear(hidden_size, hidden_size)
         self.conv = PartialConv(heads_num*feature_basis_num, heads_num*feature_basis_num, 3, padding=1)
-        self.last_mlp  = MLP(
-            hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False
-        )
+        self.last_mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         self.feature_basis_num = feature_basis_num
         self.heads_num = heads_num
         self.head_size = head_size
+        self.space_size = space_size
 
     def compute_feature_map(self, x, no_valid):
         x = rearrange(x, 'b n (h c) -> b h n c', c=self.head_size, h=self.heads_num)
         feature_basis = self.feature_basis_projector(x)
-        psi = torch.einsum("b h n c, b h n f -> b h c f", x, feature_basis)
+        psi = torch.einsum("b h n c, b h n f -> b h f c", x, feature_basis).contiguous()
         no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
         feature_basis = feature_basis.masked_fill(no_valid, 0.)
         feature_basis_norm = feature_basis.sum(dim=2)
-        psi = psi / (feature_basis_norm + 1e-6)[:, :, None, :].repeat(1, 1, self.head_size, 1)
+        psi = psi / (feature_basis_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
         return psi, feature_basis
 
     def map_back_to_originalSpace(self, feature_basis, mask, psi):
-        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=64, W=64)
-        mask_new = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=64, W=64) 
+        H = self.space_size[0]
+        W = self.space_size[1]
+        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=H, W=W)
+        mask_new          = rearrange(mask,          'b (H W) 1   -> b 1 H W', H=H, W=W) 
         mask_new = mask_new.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
         feature_basis_new, mask_new = self.conv(feature_basis_new, mask_new)
         feature_basis_new = rearrange(feature_basis_new, 'b (h F) H W -> b h (H W) F', h=self.heads_num, F=self.feature_basis_num)
         mask_new          = rearrange(mask_new, 'b c H W -> b (H W) c')[..., :1]
-        x = torch.einsum("b h c f, b h n f -> b h n c", psi, feature_basis_new)
+        x = torch.einsum("b h f c, b h n f -> b h n c", psi, feature_basis_new)
         x = rearrange(x, 'b h n c -> b n (h c)')
         return x, mask_new
 
@@ -242,11 +240,13 @@ class KernelIntegrator(nn.Module):
         psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
 
         # conjugate operator
+        #query = key = value = self.to_qkv(psi).chunk(3, dim = -1)
         query = key = value = psi
         psi = memory_efficient_attention(query, key, value)
 
         # map back to original space
         x_new, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
+        x_new = self.to_out(x_new)
 
         # mlp
         x = x + x_new
@@ -264,12 +264,15 @@ class OursModel(nn.Module):
             n_layers=0, act='gelu', res=False
         )
         self.kernelProcessor = []
+        h = int((args.space_size[0] / args.downsample))
+        w = int((args.space_size[1] / args.downsample))
         for _ in range(args.kernel_layers):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
                     args.feature_basis_num, 
-                    args.heads_num
+                    args.heads_num,
+                    space_size=[h, w],
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)
@@ -305,8 +308,10 @@ class OursModel(nn.Module):
             pos = rearrange(pos, 'b ... c -> b (...) c')
         z = torch.concat([pos, x], dim=-1)
         z = self.featureExpander(z)
+
         for _, block in enumerate(self.kernelProcessor):
             z, mask = block(z, mask)
+    
         y  = self.projector(z)
         return y
 

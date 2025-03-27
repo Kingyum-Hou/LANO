@@ -42,6 +42,7 @@ def seed_everything(seed) -> int:
     return seed
 
 
+"""
 def count_parameters(model):
     total_params = 0
     for name, parameter in model.named_parameters():
@@ -53,8 +54,20 @@ def count_parameters(model):
     print(f"Total Trainable Params: {total_params}/{(total_params/1e6):.3f}M")
     print(f"memory is approximately: {total_megabytes:.3f}Mb")
     return total_params, total_megabytes
+"""
 
 
+def count_parameters(model):
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad: continue
+        params = parameter.numel()
+        total_params += params
+    print(f"Total Trainable Params: {total_params:,} ({total_params / 1e6:.2f}M)")
+    return total_params
+
+
+"""
 def calculate_fft_flops_2d(batch_size, channels, height, width):
     fft_flops = 5 * height * width * np.log2(height * width) * channels * batch_size
     return fft_flops
@@ -66,6 +79,7 @@ def count_flops(model, test_input):
     print(f'Total FLOPs is {(flops/1e6):.2f} MFLOPs')
     warnings.filterwarnings("default")
     return flops
+"""
 
 
 # loss function with rel/abs Lp loss
@@ -273,7 +287,7 @@ class MatReader(object):
         self.to_float = to_float
 
 
-def get_grid(H, W, ref, batchsize=1):
+def get_grid(H, W, ref, bot=(0, 0), top=(1, 1), type='ij', batchsize=1):
         """
         Generates a grid of positions and computes the Euclidean distance between 
         each point in the grid and a reference grid.
@@ -289,16 +303,18 @@ def get_grid(H, W, ref, batchsize=1):
         ref to:
         https://github.com/thuml/Transolver/blob/main/PDE-Solving-StandardBenchmark/model/Transolver_Structured_Mesh_2D.py#L138
         """
+        x_bot, y_bot = bot
+        x_top, y_top = top
         size_x, size_y = H, W
-        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(x_bot, x_top, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(y_bot, y_top, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         grid = torch.cat((gridx, gridy), dim=-1)  # B H W 2
 
-        gridx = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(x_bot, x_top, ref), dtype=torch.float)
         gridx = gridx.reshape(1, ref, 1, 1).repeat([batchsize, 1, ref, 1])
-        gridy = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(y_bot, y_top, ref), dtype=torch.float)
         gridy = gridy.reshape(1, 1, ref, 1).repeat([batchsize, ref, 1, 1])
         grid_ref = torch.cat((gridx, gridy), dim=-1)  # B H W 8 8 2
 
@@ -310,3 +326,31 @@ def get_grid(H, W, ref, batchsize=1):
                     )
                 ).reshape(batchsize, size_x, size_y, ref * ref).contiguous()
         return pos
+
+
+def reshape2blocks(x, patch_size, patch_num):
+    x = rearrange(
+                x, 
+                'B (PN1 H PN2 W) T -> B (PN1 PN2) H W T',
+                B=x.shape[0],
+                T=x.shape[-1],
+                H=patch_size,
+                W=patch_size,
+                PN1=patch_num[0],
+                PN2=patch_num[1],
+            )
+    return x
+
+
+def reshape2data(x, patch_size, patch_num):
+    x = rearrange(
+                x,
+                'B (PN1 PN2) H W T -> B (PN1 H PN2 W) T',
+                B=x.shape[0],
+                T=x.shape[-1],
+                H=patch_size,
+                W=patch_size,
+                PN1=patch_num[0],
+                PN2=patch_num[1],
+            )
+    return x

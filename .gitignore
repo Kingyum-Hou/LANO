@@ -161,7 +161,7 @@ cython_debug/
 
 # save
 checkpoints/
-.vscode/
+.vscode/*
 tensorboard/
 logs/
 temp/
@@ -169,3 +169,8 @@ main.log
 *.png
 */__pycache__
 *.pyc
+save/
+coral
+outputs
+scripts
+scripts_backup

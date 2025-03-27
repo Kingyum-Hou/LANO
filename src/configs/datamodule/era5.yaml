@@ -1,0 +1,13 @@
+_target_:     dataloaders.data_interface.ERA5_DataModule
+name:         ERA5
+data_dir:     /data/jingren/repository/dataset/WeatherBench/era5_temperature.grib
+task:         task1
+missing_rate: 0.5
+n_train_test: [300, 50] # sst shape   (366, 901, 1001)
+b_train_test: [2, 2]
+num_workers:  2
+space_size:   [720, 1440]
+space_dim:    2
+T_all:        14
+downsample:   8
+ref:          ${model.params_model.ref}

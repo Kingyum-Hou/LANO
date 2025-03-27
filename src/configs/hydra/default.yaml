@@ -1,9 +1,9 @@
 defaults:
   - override hydra_logging: colorlog
   - override job_logging:   colorlog
-  
+
 run:
-  dir: logs/${model.params_model.name}_${datamodule.task}_${datamodule.missing_rate}_${tag}
+  dir: logs/${datamodule.name}/${model.params_model.name}_${datamodule.task}_${datamodule.missing_rate}_${tag}
 
 sweep:
   dir: logs/multiruns/${now:%Y-%m-%d}/${now:%H-%M-%S}
