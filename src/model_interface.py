@@ -580,6 +580,7 @@ class OursModule(ModuleTemplate):
             torch.masked_select(pred, mask_.bool()).view(B, -1), 
             torch.masked_select(yy,   mask_.bool()).view(B, -1)
         )
+        #check_model_parameters_isnan(self.model)
         return loss, full_loss, pred, yy, B, To
     
     def rollout(self, batch: Any):

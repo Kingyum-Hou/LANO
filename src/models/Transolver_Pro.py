@@ -159,15 +159,33 @@ class Physics_Attention_Irregular_Mesh(nn.Module):
         ### (3) Deslice
         # fillGap
         slice_weights_new = rearrange(slice_weights_, 'b h (H W) g -> b (h g) H W', H=64, W=64)
-        mask_new = rearrange(mask[..., 0:1], 'b (H W) 1 -> b 1 H W', H=64, W=64)
+        mask_new          = rearrange(mask[..., 0:1], 'b (H W) 1 -> b 1 H W', H=64, W=64)
         mask_new = mask_new.repeat(1, slice_weights_new.shape[1], 1, 1)
         slice_weights_new, mask_new = self.conv(slice_weights_new, mask_new)
-        slice_weights_new = slice_weights_new.reshape(B, 256, -1)
-        slice_weights_new = rearrange(slice_weights_new, 'b (h g) N -> b h N g', h=8, g=32)
+       # slice_weights_new = slice_weights_new.reshape(B, 256, -1)
+        slice_weights_new = rearrange(slice_weights_new, 'b (h g) H W -> b h (H W) g', h=8, g=32)
         mask_new = rearrange(mask_new, 'b C H W -> b (H W) C')[..., :1]
         out_x = torch.einsum("bhgc,bhng->bhnc", out_slice_token, slice_weights_new)
         out_x = rearrange(out_x, 'b h n c -> b n (h c)')
         return self.to_out(out_x), mask_new
+    
+    def get_psi(self, x, no_valid):
+        # B N C
+        B, N, C = x.shape
+
+        ### (1) Slice
+        fx_mid = self.in_project_fx(x).reshape(B, N, self.heads, self.dim_head) \
+            .permute(0, 2, 1, 3).contiguous()  # B H N C
+        x_mid = self.in_project_x(x).reshape(B, N, self.heads, self.dim_head) \
+            .permute(0, 2, 1, 3).contiguous()  # B H N C
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        slice_weights = self.softmax(self.in_project_slice(x_mid) / self.temperature)  # B H N G
+
+        slice_weights = slice_weights.masked_fill(no_valid, 0.)
+        slice_norm  = slice_weights.sum(2)  # B H G
+        slice_token = torch.einsum("bhnc,bhng->bhgc", fx_mid, slice_weights).contiguous()
+        slice_token = slice_token / ((slice_norm + 1e-5)[:, :, :, None].repeat(1, 1, 1, self.dim_head))
+        return slice_token
 
 
 class Transolver_block(nn.Module):
@@ -210,6 +228,12 @@ class Transolver_block(nn.Module):
             return self.mlp2(self.ln_3(fx_mlp)), new_mask
         else:
             return fx_mlp, new_mask
+    
+    def get_psi(self, fx, mask):
+        no_valid = mask == 0
+        fx = fx.masked_fill_(no_valid[..., 0:1], 0.0)
+        psi = self.Attn.get_psi(self.ln_1(fx), no_valid)
+        return psi
 
 
 def adjust_mask(mask):
@@ -326,3 +350,13 @@ class TransovlerPro(nn.Module):
             fx, mask  = block(fx, mask)
         
         return fx
+    
+    def get_psi(self, pos_ref, fx, mask1, mask2):
+        fx = rearrange(fx, 'b ... c -> b (...) c')
+        z = torch.cat((pos_ref, fx), -1)
+        z = self.preprocess(z)
+        
+        psi1 = self.blocks[0].get_psi(z, mask1)
+        #psi2 = self.blocks[0].get_psi(z, mask2)
+        psi2 = psi1 + 0.0001
+        return psi1, psi2
