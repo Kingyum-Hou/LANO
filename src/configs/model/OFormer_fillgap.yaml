@@ -1,6 +1,6 @@
-_target_: model_interface.OFormerModule
+_target_: model_interface.OFormerFGModule
 params_model:
-  name: OFormer
+  name: OFormer_fillgap
   in_channels: 12
   encoder_emb_dim: 128
   out_seq_emb_dim: 192
@@ -11,9 +11,12 @@ params_model:
   out_step: 1
   propagator_depth: 1
   fourier_frequency: 8
-  ntrain: ${datamodule.n_train_test[0]}
-  ntest: ${datamodule.n_train_test[1]}
+  is_fillGap: True
+  r_size: 64
   ref: 8
+  scale_factor: 2.
+  ntrain: ${datamodule.n_train_test[0]}
+  ntest:  ${datamodule.n_train_test[1]}
   monitor: train/full_loss
 params_optim: ${optim}
 params_scheduler: ${scheduler}

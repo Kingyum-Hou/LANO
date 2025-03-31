@@ -1,4 +1,4 @@
-_target_: models.model_interface.IPOTModule
+_target_: model_interface.IPOTModule
 params_model:
   name: IPOT
   position_encoding_type: pos2fourier
@@ -17,5 +17,9 @@ params_model:
   output_channel: 1
   output_scale:   0.1
   latent_init_scale:   0.02
+  ref: 8
+  ntrain: ${datamodule.n_train_test[0]}
+  ntest:  ${datamodule.n_train_test[1]}
+  monitor: train/full_loss
 params_optim: ${optim}
 params_scheduler: ${scheduler}

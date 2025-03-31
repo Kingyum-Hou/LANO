@@ -115,26 +115,6 @@ class StandardAttention(nn.Module):
         return self.to_out(out)
 
 
-def gaussian_weighted_interpolation(dist, values, sigma): 
-    weights = torch.exp(- (dist ** 2) / (2 * sigma ** 2))
-    weights /= weights.sum(dim=-1, keepdim=True)
-    interpolated_values = torch.einsum('bhnc, bmn -> bhmc', values, weights)
-    return interpolated_values
-
-
-def fill_gap_mut(k_o, v_o, dist, scale_factor=2., r=64):
-    dx = dy = 1.0 / r
-    sigma = scale_factor * dx
-    k_grid = gaussian_weighted_interpolation(dist, k_o, sigma=sigma)
-    v_grid = gaussian_weighted_interpolation(dist, v_o, sigma=sigma)
-
-    dots = torch.einsum('bhnc, bhnd -> bhcnd', k_grid, v_grid)
-    dots = rearrange(dots, 'b h c (H W) d -> b h c H W d', H=int(r), W=int(r))
-    integral_x  = torch.trapz(dots,       dx=dx, dim=-2)
-    integral_xy = torch.trapz(integral_x, dx=dy, dim=-2)
-    return integral_xy
-
-
 # New position encoding module
 # modified from https://github.com/lucidrains/x-transformers/blob/main/x_transformers/x_transformers.py
 class RotaryEmbedding(nn.Module):
@@ -155,31 +135,27 @@ class RotaryEmbedding(nn.Module):
 
 class LinearAttention(nn.Module):
     """
-    Contains following two types of attention, as discussed in "Choose a Transformer: 
-        Fourier or Galerkin"
+    Contains following two types of attention, as discussed in "Choose a Transformer: Fourier or Galerkin"
+
     Galerkin type attention, with instance normalization on Key and Value
     Fourier type attention, with instance normalization on Query and Key
     """
-    def __init__(
-            self,
-            dim,
-            attn_type,                   # ['fourier', 'galerkin']
-            heads=8,
-            dim_head=64,
-            dropout=0.,
-            init_params=True,
-            relative_emb=False,
-            scale=1.,
-            init_method='orthogonal',    # ['xavier', 'orthogonal']
-            init_gain=None,
-            relative_emb_dim=2,
-            min_freq=1/64,               # 1/64 is for 64 x 64 ns2d,
-            cat_pos=False,
-            pos_dim=2,
-            is_fillGap=False,
-            scale_factor=2.,
-            r=8.,
-        ):
+    def __init__(self,
+                 dim,
+                 attn_type,                 # ['fourier', 'galerkin']
+                 heads=8,
+                 dim_head=64,
+                 dropout=0.,
+                 init_params=True,
+                 relative_emb=False,
+                 scale=1.,
+                 init_method='orthogonal',    # ['xavier', 'orthogonal']
+                 init_gain=None,
+                 relative_emb_dim=2,
+                 min_freq=1/64,             # 1/64 is for 64 x 64 ns2d,
+                 cat_pos=False,
+                 pos_dim=2,
+                 ):
         super().__init__()
         inner_dim = dim_head * heads
         project_out = not (heads == 1 and dim_head == dim)
@@ -187,9 +163,6 @@ class LinearAttention(nn.Module):
 
         self.heads = heads
         self.dim_head = dim_head
-        self.is_fillGap = is_fillGap
-        self.scale_factor = scale_factor
-        self.r = r
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
 
@@ -268,7 +241,7 @@ class LinearAttention(nn.Module):
             norm_fn(rearrange(x, 'b h n d -> (b h) d n')),
             '(b h) d n -> b h n d', b=b)
 
-    def forward(self, x, pos=None, not_assoc=False, dist=None):
+    def forward(self, x, pos=None, not_assoc=False):
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
 
@@ -309,9 +282,6 @@ class LinearAttention(nn.Module):
             # this is more efficient when n<<c
             score = torch.matmul(q, k.transpose(-1, -2))
             out = torch.matmul(score, v) * (1./q.shape[2])
-        elif self.is_fillGap:
-            dots = fill_gap_mut(k, v, dist, scale_factor=self.scale_factor, r=self.r)
-            out = torch.matmul(q, dots) * (1./q.shape[2])
         else:
             dots = torch.matmul(k.transpose(-1, -2), v)  # [B, H, 96, 96]
             out = torch.matmul(q, dots) * (1./q.shape[2])
@@ -320,27 +290,23 @@ class LinearAttention(nn.Module):
     
 
 class TransformerCatNoCls(nn.Module):
-    def __init__(
-            self,
-            dim,
-            depth,
-            heads,
-            dim_head,
-            mlp_dim,
-            attn_type,  # ['standard', 'galerkin', 'fourier']
-            use_ln=False,
-            scale=16,     # can be list, or an int
-            dropout=0.,
-            relative_emb_dim=2,
-            min_freq=1/64,
-            attention_init='orthogonal',
-            init_gain=None,
-            use_relu=False,
-            cat_pos=False,
-            is_fillGap=True,
-            scale_factor=0.1,
-            r=8,
-        ):
+    def __init__(self,
+                 dim,
+                 depth,
+                 heads,
+                 dim_head,
+                 mlp_dim,
+                 attn_type,  # ['standard', 'galerkin', 'fourier']
+                 use_ln=False,
+                 scale=16,     # can be list, or an int
+                 dropout=0.,
+                 relative_emb_dim=2,
+                 min_freq=1/64,
+                 attention_init='orthogonal',
+                 init_gain=None,
+                 use_relu=False,
+                 cat_pos=False,
+                 ):
         super().__init__()
         assert attn_type in ['standard', 'galerkin', 'fourier']
 
@@ -363,43 +329,29 @@ class TransformerCatNoCls(nn.Module):
         else:
             for d in range(depth):
                 if scale[d] != -1 or cat_pos:
-                    attn_module = LinearAttention(
-                        dim, 
-                        attn_type,
-                        heads=heads, 
-                        dim_head=dim_head, 
-                        dropout=dropout,
-                        relative_emb=True, 
-                        scale=scale[d],
-                        relative_emb_dim=relative_emb_dim,
-                        min_freq=min_freq,
-                        init_method=attention_init,
-                        init_gain=init_gain,
-                        is_fillGap=is_fillGap,
-                        scale_factor=scale_factor,
-                        r=r,
-                    )
+                    attn_module = LinearAttention(dim, attn_type,
+                                                   heads=heads, dim_head=dim_head, dropout=dropout,
+                                                   relative_emb=True, scale=scale[d],
+                                                   relative_emb_dim=relative_emb_dim,
+                                                   min_freq=min_freq,
+                                                   init_method=attention_init,
+                                                   init_gain=init_gain
+                                                   )
                 else:
-                    attn_module = LinearAttention(
-                        dim, 
-                        attn_type,
-                        heads=heads, 
-                        dim_head=dim_head, 
-                        dropout=dropout,
-                        cat_pos=True,
-                        pos_dim=relative_emb_dim,
-                        relative_emb=False,
-                        init_method=attention_init,
-                        init_gain=init_gain,
-                        r=r,
-                    )
+                    attn_module = LinearAttention(dim, attn_type,
+                                                  heads=heads, dim_head=dim_head, dropout=dropout,
+                                                  cat_pos=True,
+                                                  pos_dim=relative_emb_dim,
+                                                  relative_emb=False,
+                                                  init_method=attention_init,
+                                                  init_gain=init_gain
+                                                  )
                 if not use_ln:
                     self.layers.append(
                         nn.ModuleList([
-                            attn_module,
-                            FeedForward(dim, mlp_dim, dropout=dropout)
-                                if not use_relu 
-                                else ReLUFeedForward(dim, mlp_dim, dropout=dropout)
+                                        attn_module,
+                                        FeedForward(dim, mlp_dim, dropout=dropout)
+                                        if not use_relu else ReLUFeedForward(dim, mlp_dim, dropout=dropout)
                         ]),
                         )
                 else:
@@ -408,16 +360,14 @@ class TransformerCatNoCls(nn.Module):
                             nn.LayerNorm(dim),
                             attn_module,
                             nn.LayerNorm(dim),
-                            FeedForward(dim, mlp_dim, dropout=dropout) 
-                                if not use_relu 
-                                else ReLUFeedForward(dim, mlp_dim, dropout=dropout),
+                            FeedForward(dim, mlp_dim, dropout=dropout)
+                            if not use_relu else ReLUFeedForward(dim, mlp_dim, dropout=dropout),
                         ]),
                     )
 
-    def forward(self, x, pos_embedding, pos_complete, dist=None):
+    def forward(self, x, pos_embedding):
         # x in [b n c], pos_embedding in [b n 2]
-        if dist is None:
-            dist = torch.cdist(pos_complete, pos_embedding)
+        b, n, c = x.shape
 
         for layer_no, attn_layer in enumerate(self.layers):
             if not self.use_ln:
@@ -428,7 +378,7 @@ class TransformerCatNoCls(nn.Module):
             else:
                 [ln1, attn, ln2, ffn] = attn_layer
                 x = ln1(x)
-                x = attn(x, pos_embedding, dist=dist) + x
+                x = attn(x, pos_embedding) + x
                 x = ln2(x)
                 x = ffn(x) + x
         return x
@@ -436,65 +386,38 @@ class TransformerCatNoCls(nn.Module):
 
 class SpatialTemporalEncoder2D(nn.Module):
     def __init__(self,
-            input_channels,         
-            in_emb_dim,             
-            out_seq_emb_dim,        
-            heads,
-            depth,                
-            is_fillGap,
-            scale_factor,
-            r,
-        ):
+                 input_channels,           # how many channels
+                 in_emb_dim,               # embedding dim of token                 (how about 512)
+                 out_seq_emb_dim,          # embedding dim of encoded sequence      (how about 256)
+                 heads,
+                 depth,                    # depth of transformer / how many layers of attention    (4)
+                 ):
         super().__init__()
 
         self.to_embedding = nn.Sequential(
+            # Rearrange('b c n -> b n c'),
             nn.Linear(input_channels, in_emb_dim, bias=False),
         )
 
         if depth > 4:
-            self.s_transformer = TransformerCatNoCls(
-                in_emb_dim, 
-                depth, 
-                heads, 
-                in_emb_dim, 
-                in_emb_dim,
-                'galerkin', 
-                True, 
-                scale=[32, 16, 8, 8] + [1] * (depth - 4),
-                attention_init='orthogonal',
-                is_fillGap=is_fillGap,
-                scale_factor=scale_factor,
-                r=r,
-            )
+            self.s_transformer = TransformerCatNoCls(in_emb_dim, depth, heads, in_emb_dim, in_emb_dim,
+                                                     'galerkin', True, scale=[32, 16, 8, 8] +
+                                                                             [1] * (depth - 4),
+                                                     attention_init='orthogonal')
         else:
-            self.s_transformer = TransformerCatNoCls(
-                in_emb_dim, 
-                depth, 
-                heads, 
-                in_emb_dim, 
-                in_emb_dim,
-                'galerkin', 
-                True, 
-                scale=[32] + [16]*(depth-2) + [1],
-                attention_init='orthogonal',
-                is_fillGap=is_fillGap,
-                scale_factor=scale_factor,
-                r=r,
-            )
+            self.s_transformer = TransformerCatNoCls(in_emb_dim, depth, heads, in_emb_dim, in_emb_dim,
+                                                     'galerkin', True, scale=[32] + [16]*(depth-2) + [1],
+                                                     attention_init='orthogonal')
 
-        self.project_to_latent = nn.Sequential(
-            nn.Linear(in_emb_dim, out_seq_emb_dim, bias=False)
-        )
+        self.project_to_latent = nn.Sequential(nn.Linear(in_emb_dim, out_seq_emb_dim, bias=False))
 
-    def forward(
-            self,
-            x,  # [b, t(*c)+2, n]
-            input_pos,  # [b, n, 2]
-            complete_pos, # [b, N, 2]
-        ):
+    def forward(self,
+                x,  # [b, t(*c)+2, n]
+                input_pos,  # [b, n, 2]
+                ):
 
         x = self.to_embedding(x)
-        x = self.s_transformer.forward(x, input_pos, complete_pos)
+        x = self.s_transformer.forward(x, input_pos)
         x = self.project_to_latent(x)
 
         return x
@@ -873,23 +796,9 @@ class PointWiseDecoder2D(nn.Module):
         return history  # [b, n, length_of_history*c]ruan
     
 
-class OFormerFillGap(nn.Module):
-    def __init__(
-        self, 
-        in_channels, 
-        encoder_emb_dim, 
-        out_seq_emb_dim, 
-        encoder_heads, 
-        encoder_depth, 
-        decoder_emb_dim, 
-        out_channels, 
-        out_step, 
-        propagator_depth, 
-        fourier_frequency, 
-        is_fillGap=True,
-        scale_factor=2.,
-        r=8,
-    ):
+class OFormer(nn.Module):
+    def __init__(self, in_channels, encoder_emb_dim, out_seq_emb_dim, encoder_heads, encoder_depth, 
+                 decoder_emb_dim, out_channels, out_step, propagator_depth, fourier_frequency):
         super().__init__()
         self.encoder = SpatialTemporalEncoder2D(
             in_channels,
@@ -897,9 +806,6 @@ class OFormerFillGap(nn.Module):
             out_seq_emb_dim,
             encoder_heads,
             encoder_depth,
-            is_fillGap,
-            scale_factor,
-            r,
         )
         self.decoder = PointWiseDecoder2D(
             decoder_emb_dim,
@@ -910,7 +816,7 @@ class OFormerFillGap(nn.Module):
             dropout=0.0,
         )
     
-    def forward(self, x, input_pos, output_pos, complete_pos, T):
-        z = self.encoder.forward(x, input_pos, complete_pos)
+    def forward(self, x, input_pos, output_pos, T):
+        z = self.encoder.forward(x, input_pos)
         y = self.decoder.rollout(z, output_pos, T, input_pos)
         return y

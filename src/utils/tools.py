@@ -4,6 +4,8 @@ import os
 import numpy as np
 import random
 from einops import rearrange
+import torchprofile
+import warnings
 import h5py
 import scipy
 from pytorch_lightning.callbacks import Callback
@@ -40,6 +42,21 @@ def seed_everything(seed) -> int:
     return seed
 
 
+"""
+def count_parameters(model):
+    total_params = 0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad: continue
+        params = parameter.numel()
+        total_params += params
+    total_bytes = total_params * 4  # float32
+    total_megabytes = total_bytes / (1024**2)
+    print(f"Total Trainable Params: {total_params}/{(total_params/1e6):.3f}M")
+    print(f"memory is approximately: {total_megabytes:.3f}Mb")
+    return total_params, total_megabytes
+"""
+
+
 def count_parameters(model):
     total_params = 0
     for name, parameter in model.named_parameters():
@@ -54,8 +71,10 @@ def count_parameters(model):
 class LpLoss(object):
     def __init__(self, d=2, p=2, size_average=True, reduction=True):
         super(LpLoss, self).__init__()
+
         # Dimension and Lp-norm type are postive
         assert d > 0 and p > 0
+
         self.d = d
         self.p = p
         self.reduction = reduction
@@ -63,10 +82,13 @@ class LpLoss(object):
 
     def abs(self, x, y):
         num_examples = x.size()[0]
+
         # Assume uniform mesh
         h = 1.0 / (x.size()[1] - 1.0)
+
         all_norms = (h ** (self.d / self.p)) * torch.norm(x.reshape(num_examples, -1) - y.reshape(num_examples, -1),
                                                           self.p, 1)
+
         if self.reduction:
             if self.size_average:
                 return torch.mean(all_norms)
@@ -239,7 +261,7 @@ class MatReader(object):
         self.to_float = to_float
 
 
-def get_grid(H, W, ref, batchsize=1):
+def get_grid(H, W, ref, bot=(0, 0), top=(1, 1), type='ij', batchsize=1):
         """
         Generates a grid of positions and computes the Euclidean distance between 
         each point in the grid and a reference grid.
@@ -255,16 +277,18 @@ def get_grid(H, W, ref, batchsize=1):
         ref to:
         https://github.com/thuml/Transolver/blob/main/PDE-Solving-StandardBenchmark/model/Transolver_Structured_Mesh_2D.py#L138
         """
+        x_bot, y_bot = bot
+        x_top, y_top = top
         size_x, size_y = H, W
-        gridx = torch.tensor(np.linspace(0, 1, size_x), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(x_bot, x_top, size_x), dtype=torch.float)
         gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
-        gridy = torch.tensor(np.linspace(0, 1, size_y), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(y_bot, y_top, size_y), dtype=torch.float)
         gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
         grid = torch.cat((gridx, gridy), dim=-1)  # B H W 2
 
-        gridx = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridx = torch.tensor(np.linspace(x_bot, x_top, ref), dtype=torch.float)
         gridx = gridx.reshape(1, ref, 1, 1).repeat([batchsize, 1, ref, 1])
-        gridy = torch.tensor(np.linspace(0, 1, ref), dtype=torch.float)
+        gridy = torch.tensor(np.linspace(y_bot, y_top, ref), dtype=torch.float)
         gridy = gridy.reshape(1, 1, ref, 1).repeat([batchsize, ref, 1, 1])
         grid_ref = torch.cat((gridx, gridy), dim=-1)  # B H W 8 8 2
 
@@ -283,10 +307,11 @@ def check_model_parameters_isnan(model):
         if param.grad is not None:
             if torch.isnan(param.grad).any():
                 print(f"param:{name}'s grad is NaN")
-
+                
 
 def reshape2blocks(x, patch_size, patch_num):
-    x = rearrange(x, 
+    x = rearrange(
+                x, 
                 'B (PN1 H PN2 W) T -> B (PN1 PN2) H W T',
                 B=x.shape[0],
                 T=x.shape[-1],
@@ -299,7 +324,8 @@ def reshape2blocks(x, patch_size, patch_num):
 
 
 def reshape2data(x, patch_size, patch_num):
-    x = rearrange(x,
+    x = rearrange(
+                x,
                 'B (PN1 PN2) H W T -> B (PN1 H PN2 W) T',
                 B=x.shape[0],
                 T=x.shape[-1],

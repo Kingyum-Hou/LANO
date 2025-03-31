@@ -199,6 +199,7 @@ class MIONet_periodic(torch.nn.Module):
     def __init__(self, sizes, activation='relu', initializer='default'):
         super().__init__()
         self.sizes = sizes
+        self.sensor = self.sizes[0][0]
         self.activation = activation
         self.initializer = initializer
 
@@ -206,10 +207,10 @@ class MIONet_periodic(torch.nn.Module):
         self.ms = self.__init_modules()
         self.ps = self.__init_parameters()
         
-    def forward(self, x):
+    def forward(self, x, To=10):
         y = [a for a in x]
         b, n = y[0].shape
-        t = int(y[-1].shape[0]/4096)
+        output_num = int(y[-1].shape[0]/To)
         for i in self.periodic:
             # 1D
             #y[i] = 2 * math.pi * y[i]
@@ -230,7 +231,7 @@ class MIONet_periodic(torch.nn.Module):
         trunk_  = torch.stack([self.ms['Net{}'.format(i + 1)](y[i]) for i in range(len(self.sizes)-2, len(self.sizes))])
         
         output = torch.einsum('Bbd, Tnd -> bn', branch_, trunk_)
-        output = output.reshape(b, 4096, t) + self.ps['bias']
+        output = output.reshape(b, output_num, To) + self.ps['bias']
         return output
     
     def __init_modules(self):

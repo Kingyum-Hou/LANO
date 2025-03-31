@@ -1,12 +1,8 @@
 from __future__ import annotations
 import torch
 import torch.nn as nn
-from einops import rearrange, repeat, einsum
-from torch.nn.utils.rnn import pad_sequence
-from typing import Optional, Dict
-from torch import Tensor
+from einops import rearrange, repeat
 from timm.layers import trunc_normal_
-from torch.nn.init import xavier_uniform_, constant_, xavier_normal_, orthogonal_
 import math
 from xformers.ops import memory_efficient_attention
 
@@ -144,7 +140,7 @@ class ApplyRotaryEmbedding():
         self.name = 'rotaryEmbedding'
         self.space_dim = space_dim
 
-    def rotate_half(x):
+    def rotate_half(self, x):
         x = rearrange(x, '... (j d) -> ... j d', j = 2)
         x1, x2 = x.unbind(dim = -2)
         return torch.cat((-x2, x1), dim = -1)
@@ -317,6 +313,6 @@ class OursModel(nn.Module):
 
         for _, block in enumerate(self.kernelProcessor):
             z, mask = block(z, mask)
-        
+    
         y  = self.projector(z)
         return y

@@ -6,16 +6,17 @@ params_model:
   ntrain: ${datamodule.n_train_test[0]}
   ntest:  ${datamodule.n_train_test[1]}
   scale_factor: 2.
+  space_size: ${datamodule.space_size}
   ref: 8
   hidden_size: 256
   head_size: 32
   heads_num: 8
   kernel_layers: 8
   feature_basis_num: 32
-  alpha: 1e-5
+  alpha: 1e-4
   t: 10
-  space_size: ${datamodule.space_size}
   downsample: ${datamodule.downsample}
+  monitor: train/full_loss
 
 params_optim: ${optim}
 

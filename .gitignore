@@ -173,4 +173,8 @@ coral
 outputs
 scripts
 scripts_backup
+<<<<<<< HEAD
 launch.json
+=======
+launch.json
+>>>>>>> origin/master

@@ -127,8 +127,8 @@ def get_NS(
         train_u  = train_au[..., 10:  ]
         # test
         test_au_, test_mask = add_point_missing(test_au, num_sampling)
-        test_a    = test_au_[...,   :10]
-        test_u    = test_au [..., 10:  ]
+        test_a   = test_au_[...,   :10]
+        test_u   = test_au [..., 10:  ]
     elif task == "task0":
         train_mask = torch.ones_like(train_au)
         train_a    = train_au[...,   :10]

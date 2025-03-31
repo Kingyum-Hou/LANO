@@ -25,7 +25,7 @@ def train(cfg: DictConfig) -> Optional[float]:
     # Init Lightning datamodule
     datamodule: pl.LightningDataModule = instantiate(cfg.datamodule)
     datamodule.prepare_data()
-
+    
     # Init Lightning model
     model: pl.LightningDataModule = instantiate(cfg.model)
 
@@ -61,7 +61,7 @@ def main(cfg: DictConfig) -> Optional[float]:
         f"full_loss={testLoss_dict['test/full_loss']:.4f}" +
         f"?sound={cfg.sound}"
     )
-
+ 
 
 if __name__ == '__main__':
     main()

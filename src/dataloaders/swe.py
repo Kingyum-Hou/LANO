@@ -85,8 +85,8 @@ def get_SWE(
         train_y = train_xy[..., 10:]
         # test
         test_xy_, test_mask = add_patch_missing(test_xy, missing_rate, [H, W], patch_size=4)
-        test_x = test_xy_[..., :10]
-        test_y = test_xy [..., 10:]
+        test_x  = test_xy_[..., :10]
+        test_y  = test_xy [..., 10:]
     else:
         raise NotImplementedError
     return (train_mask, train_pos, train_x, train_y, train_pos_ref), (test_mask, test_pos, test_x, test_y, test_pos_ref)

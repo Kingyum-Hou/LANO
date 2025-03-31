@@ -5,7 +5,7 @@ task:         task3
 missing_rate: 0.5
 n_train_test: [500, 100] # sst shape   (366, 901, 1001)
 b_train_test: [2, 2]
-num_workers:  1
+num_workers:  2
 space_size:   [128, 128]
 space_dim:    2
 T_all:        20
