@@ -1,0 +1,21 @@
+_target_: models.model_interface.IPOTModule
+params_model:
+  name: IPOT
+  position_encoding_type: pos2fourier
+  input_channel: 10
+  pos_channel:   2
+  num_bands:      [12, 12]
+  max_resolution: [20, 20]
+  num_latents:    512
+  latent_channel: 128
+  cross_heads_num:     1 
+  cross_heads_channel: 128
+  self_per_cross_attn: 2
+  self_heads_channel:
+  self_heads_num: 4
+  ff_mult: 2
+  output_channel: 1
+  output_scale:   0.1
+  latent_init_scale:   0.02
+params_optim: ${optim}
+params_scheduler: ${scheduler}

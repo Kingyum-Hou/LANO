@@ -1,0 +1,18 @@
+_target_: model_interface.OFormerModule
+params_model:
+  name: OFormer
+  in_channels: 12
+  encoder_emb_dim: 96
+  out_seq_emb_dim: 192
+  encoder_heads: 1
+  encoder_depth: 5
+  decoder_emb_dim: 384
+  out_channels: 1
+  out_step: 1
+  propagator_depth: 1
+  fourier_frequency: 8
+  ntrain: ${datamodule.n_train_test[0]}
+  ntest: ${datamodule.n_train_test[1]}
+  r: 64
+params_optim: ${optim}
+params_scheduler: ${scheduler}

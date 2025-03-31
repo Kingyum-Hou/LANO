@@ -1,0 +1,13 @@
+torch
+pytorch-lightning
+hydra-colorlog
+omegaconf
+wandb
+scipy
+torchprofile
+einops
+h5py
+xformers
+jupyter
+pytorch-cluster
+pytorch_scatter
