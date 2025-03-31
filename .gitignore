@@ -171,10 +171,6 @@ main.log
 save/
 coral
 outputs
-scripts
+scripts/*
 scripts_backup
-<<<<<<< HEAD
 launch.json
-=======
-launch.json
->>>>>>> origin/master
