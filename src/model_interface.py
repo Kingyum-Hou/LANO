@@ -13,7 +13,6 @@ from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.backup.OFORMER import OFormer as OFormer_old
 from models.OFORMER_FILLGAP import OFormerFillGap
-from models.Transolver_Pro import TransovlerPro
 from tools import LpLoss, reshape2blocks, reshape2data, count_parameters
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
@@ -115,7 +114,7 @@ def get_model(cfg):
         model = MIONet(sizes, cfg.activation, cfg.initializer)
     elif cfg.name == "OFormer":
         model = OFormer(cfg)
-    elif cfg.name == "OFORMER_FILLGAP":
+    elif cfg.name == "OFormer_fillgap":
         model = OFormerFillGap(
             cfg.in_channels,
             cfg.encoder_emb_dim,
@@ -129,7 +128,7 @@ def get_model(cfg):
             cfg.fourier_frequency,
             is_fillGap=cfg.is_fillGap,
             scale_factor=cfg.scale_factor,
-            r=cfg.r,
+            r=cfg.r_size,
         )
     elif cfg.name == "Ours":
         model = OursModel(cfg)
@@ -187,6 +186,7 @@ class ModuleTemplate(pl.LightningModule):
 
         self.ntrain     = params_model.ntrain
         self.ntest      = params_model.ntest
+        self.batch_size = params_scheduler.batch_size
 
         self.is_sync_dist = torch.cuda.device_count() > 1
         self.train_start_time = None
@@ -199,7 +199,7 @@ class ModuleTemplate(pl.LightningModule):
         train_end_time = time.time()
         epoch_time = train_end_time - self.train_start_time
         self.epoch_times.append(epoch_time)
-        self.log("train/epoch_time", epoch_time, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log("train/epoch_time", epoch_time, sync_dist=self.is_sync_dist, batch_size=self.batch_size, on_step=False, on_epoch=True, reduce_fx=torch.sum)
 
     def on_train_end(self):
         avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times)
@@ -217,17 +217,35 @@ class ModuleTemplate(pl.LightningModule):
             }
         }
 
-    def training_step(self):
-        raise NotImplementedError
+    def training_step(self, batch: Any, batch_idx: int):
+        full_loss, loss = self.step(batch)
+        self.log(
+            "train/full_loss", full_loss,
+            sync_dist=self.is_sync_dist, on_step=False,
+            on_epoch=True, reduce_fx=torch.mean,
+            batch_size=self.batch_size
+        )
+        return {"loss": loss}
     
-    def validation_step(self):
-        raise NotImplementedError
+    def validation_step(self, batch: Any, batch_idx: int):
+        full_loss = self.rollout(batch)
+        self.log(
+            "validation/full_loss", full_loss,
+            sync_dist=self.is_sync_dist, on_step=False,
+            on_epoch=True, reduce_fx=torch.mean,
+        )
+        return {"loss": full_loss}
 
-    def test_step(self):
-        raise NotImplementedError
+    def test_step(self, batch: Any, batch_idx: int):
+        full_loss = self.rollout(batch)
+        self.log(
+            "test/full_loss", full_loss,
+            sync_dist=self.is_sync_dist, on_step=False,
+            on_epoch=True, reduce_fx=torch.mean,
+        )
+        return {"loss": full_loss}
 
     
-
 class IPOTModule(ModuleTemplate):
     def step(self, batch: Any):
         mask, pos, xx, yy, _, task = batch
@@ -247,7 +265,7 @@ class IPOTModule(ModuleTemplate):
             torch.masked_select(yy,   mask[..., :To].bool()).view(B, -1)
         )
         full_loss = loss
-        return loss, full_loss, pred, yy, B
+        return full_loss, loss
     
     def rollout(self, batch: Any):
         mask, pos, xx, yy, _, task = batch
@@ -259,73 +277,12 @@ class IPOTModule(ModuleTemplate):
         x_pos_had = torch.cat([x_had, pos_had], dim=-1)
         pred = self.model(x_pos_had, pos_pred, To)
         pred.reshape(yy.shape)
-        loss = self.criterion(
+        full_loss = self.criterion(
             pred.view(B, -1), 
               yy.view(B, -1)
         )
-        full_loss = loss
-        return loss, full_loss, pred, yy, B
+        return full_loss
     
-    def training_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "train/step_loss", step_loss/self.ntrain,  
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/full_loss", full_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/l2_loss", l2_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-
-    def validation_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "validation/step_loss", step_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-
-    def test_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "test/step_loss", step_loss/self.ntest,  
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-
 
 class FNOModule(ModuleTemplate):
     def step(self, batch: Any):
@@ -344,31 +301,23 @@ class FNOModule(ModuleTemplate):
             a = torch.cat([a[..., 1:], pred], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
-        return loss, full_loss, pred, u, B, To
+        return full_loss, loss
     
-    def training_step(self, batch: Any, batch_idx: int):
-        loss, full_loss, yhat, yref, B, To = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("train/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("train/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("train/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
-
-    def validation_step(self, batch: Any, batch_idx: int):
-        loss, full_loss, yhat, yref, B, To = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("validation/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("validation/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("validation/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
-
-    def test_step(self, batch: Any, batch_idx: int):
-        loss, full_loss, yhat, yref, B, To = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))
-        self.log("test/loss",        loss/B/To, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("test/full_loss", full_loss/B, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        self.log("test/l2_loss",       l2_loss, sync_dist=self.is_sync_dist, on_step=False, on_epoch=True)
-        return {"loss": loss}
+    def rollout(self, batch: Any):
+        _, _, a, u = batch
+        B, HW, Ti = a.shape
+        _,  _, To = u.shape
+        a = rearrange(a, 'B (H W) T -> B H W T', H=64, W=64)
+        u = rearrange(u, 'B (H W) T -> B H W T', H=64, W=64)
+        pred_trajectory = []
+        for t in range(0, To):
+            y = u[..., t:t+1]
+            pred = self.model(a)
+            pred_trajectory.append(pred)
+            a = torch.cat([a[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return full_loss
 
 
 class MIONetModule(ModuleTemplate):
@@ -388,76 +337,32 @@ class MIONetModule(ModuleTemplate):
         inputs.append(torch.linspace(1, To, steps=To, device=xx.device).reshape(1, To, 1).repeat(HW, 1, 1).reshape(HW*To, 1))
         pred = self.model(inputs, To)
         pred = pred.reshape(yy.shape)
-        if is_train:
-            loss = self.criterion(
-                torch.masked_select(pred, mask[..., :To].bool()).view(B, -1), 
-                torch.masked_select(yy,   mask[..., :To].bool()).view(B, -1)
-            )
-        else:
-            loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        loss = self.criterion(
+            torch.masked_select(pred, mask[..., :To].bool()).view(B, -1), 
+            torch.masked_select(yy,   mask[..., :To].bool()).view(B, -1)
+        )
         full_loss = loss
-        return loss, full_loss, pred, yy, B, To
+        return full_loss, loss
     
-    def training_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.step(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "train/step_loss", step_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/full_loss", full_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/l2_loss", l2_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-
-    def validation_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.step(batch, is_train=False)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "validation/step_loss", step_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-
-    def test_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.step(batch, is_train=False)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "test/step_loss", step_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
-
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, _, task = batch
+        B, HW, Ti =   xx.shape
+        _,  _,  D = pos.shape
+        _,  _, To = yy.shape
+        a_had    = xx [mask[..., :Ti].bool()].reshape(B, -1, Ti)
+        pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        inputs = []
+        for i in range(0, Ti):
+            inputs.append(a_had[..., i])
+        for i in range(0, D):
+            inputs.append(pos_had[..., i])
+        inputs.append(pos[0].unsqueeze(dim=1).repeat(1, To, 1).reshape(HW*To, D))
+        inputs.append(torch.linspace(1, To, steps=To, device=xx.device).reshape(1, To, 1).repeat(HW, 1, 1).reshape(HW*To, 1))
+        pred = self.model(inputs, To)
+        pred = pred.reshape(yy.shape)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss
+    
 
 class OFormerModule(ModuleTemplate):
     def step(self, batch: Any):
@@ -474,11 +379,12 @@ class OFormerModule(ModuleTemplate):
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
 
         pred      = self.model(agent_aPos, agent_pos, pos_pred, To)
-        full_loss = self.criterion(
+        loss = self.criterion(
             pred.                                   view(B, -1),
             torch.masked_select(u,    mask_.bool()).view(B, -1)
         )
-        return full_loss, pred, u, B
+        full_loss = loss
+        return full_loss, loss
 
     def rollout(self, batch: Any):
         mask, pos, a, u, _, task = batch
@@ -490,46 +396,43 @@ class OFormerModule(ModuleTemplate):
         aPos_had  = torch.concat([a_had, pos_had], dim=-1)
         pred      = self.model(aPos_had, pos_had, pos_pred, To)
         full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
-        return full_loss, pred, u, B
-    
-    def training_step(self, batch: Any, batch_idx: int):
-        full_loss, _, _, _ = self.step(batch)
-        self.log(
-            "train/full_loss", full_loss/self.ntrain, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
+        return full_loss
 
-    def validation_step(self, batch: Any, batch_idx: int):
-        full_loss, yhat, yref, B = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "validation/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
 
-    def test_step(self, batch: Any, batch_idx: int):
-        full_loss, yhat, yref, B = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "test/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
+class OFormerFGModule(ModuleTemplate):
+    def step(self, batch: Any):
+        mask, pos, a, u, _, task = batch
+        B,  _, Ti = a.shape
+        _,  _, To = u.shape
+        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+
+        # agent mission
+        mask_      = mask[..., 0].unsqueeze(dim=-1)
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16])
+        agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
+        agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
+        agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
+        pos_interp = pos.reshape(B, 64, 64, 2)[:, ::8, ::8, :].reshape(B, -1, 2)
+        pred       = self.model(agent_aPos, agent_pos, pos_pred, pos_interp, To)
+        loss  = self.criterion(
+            pred                                   .view(B, -1),
+            torch.masked_select(u,    mask_.bool()).view(B, -1)
         )
-        self.log(
-            "test/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
+        full_loss = loss
+        return full_loss, loss
+
+    def rollout(self, batch: Any):
+        mask, pos, a, u, _, task = batch
+        B, _, Ti = a.shape
+        _, _, To = u.shape
+        a_had    = a  [mask[..., :Ti].bool()].reshape(B, -1, Ti)
+        pos_had  = pos[mask[..., : 2].bool()].reshape(B, -1,  2)
+        aPos_had = torch.concat([a_had, pos_had], dim=-1)
+        pos_pred = pos
+        pos_interp = pos.reshape(B, 64, 64, 2)[:, ::8, ::8, :].reshape(B, -1, 2)
+        pred     = self.model(aPos_had, pos_had, pos_pred, pos_interp, To)
+        full_loss = self.criterion(pred.reshape(B, -1), u.reshape(B, -1))
+        return full_loss
 
 
 class OursModule(ModuleTemplate):
@@ -581,7 +484,7 @@ class OursModule(ModuleTemplate):
             torch.masked_select(yy,   mask_.bool()).view(B, -1)
         )
         #check_model_parameters_isnan(self.model)
-        return loss, full_loss, pred, yy, B, To
+        return full_loss, loss
     
     def rollout(self, batch: Any):
         mask, pos, xx, yy, pos_ref, task = batch
@@ -589,67 +492,12 @@ class OursModule(ModuleTemplate):
         _,  _, To = yy.shape
 
         pred_trajectory = []
-        step_loss       = 0.
         for t in range(0, To):
             y    = yy[..., t:t+1]
             pred = self.model(pos_ref, xx, mask[..., :1])
-            step_loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], pred], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
-        return step_loss, full_loss, pred, yy, B, To
-    
-    def training_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, _, _, _, To = self.step(batch)
-        self.log(
-            "train/full_loss", full_loss/self.ntrain,
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "train/step_loss", step_loss/self.ntrain/To,
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": step_loss}
-    
-    def validation_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "validation/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/step_loss", step_loss/self.ntest/To,
-            sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "validation/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
-
-    def test_step(self, batch: Any, batch_idx: int):
-        step_loss, full_loss, yhat, yref, B, To = self.rollout(batch)
-        l2_loss = F.mse_loss(yhat.view(B, -1), yref.view(B, -1))*B
-        self.log(
-            "test/full_loss", full_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/step_loss", step_loss/self.ntest/To,
-            sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        self.log(
-            "test/l2_loss", l2_loss/self.ntest, 
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.sum
-        )
-        return {"loss": full_loss}
+        return full_loss
+ 

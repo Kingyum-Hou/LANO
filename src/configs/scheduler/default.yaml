@@ -2,6 +2,7 @@ name: OneCycleLR
 StepLR:
   step_size: 200
   gamma:     0.5
+  batch_size: ${datamodule.b_train_test[0]}
 OneCycleLR:
   lr:         ${optim.lr}
   epochs:     ${trainer.max_epochs}
@@ -15,3 +16,4 @@ milestones:
   epochs:        ${trainer.max_epochs}
   gamma:         0.5
   step_interval: 250
+  batch_size:    ${datamodule.b_train_test[0]}

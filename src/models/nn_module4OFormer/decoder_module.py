@@ -713,9 +713,9 @@ class PointWiseDecoder2D(nn.Module):
             nn.LayerNorm(self.latent_channels),
             nn.Linear(self.latent_channels, self.latent_channels//2, bias=False),
             nn.GELU(),
-            nn.Linear(self.latent_channels // 2, self.latent_channels // 2, bias=False),
+            nn.Linear(self.latent_channels // 2, self.latent_channels // 4, bias=False),
             nn.GELU(),
-            nn.Linear(self.latent_channels//2, self.out_channels * self.out_steps, bias=True))
+            nn.Linear(self.latent_channels//4, self.out_channels * self.out_steps, bias=True))
 
     def propagate(self, z, pos):
         for layer in self.propagator:

@@ -377,6 +377,7 @@ class TransformerCatNoCls(nn.Module):
                         init_gain=init_gain,
                         is_fillGap=is_fillGap,
                         scale_factor=scale_factor,
+                        r=r,
                     )
                 else:
                     attn_module = LinearAttention(
@@ -390,6 +391,7 @@ class TransformerCatNoCls(nn.Module):
                         relative_emb=False,
                         init_method=attention_init,
                         init_gain=init_gain,
+                        r=r,
                     )
                 if not use_ln:
                     self.layers.append(
