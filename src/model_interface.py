@@ -149,16 +149,17 @@ def get_optimizer(params, cfg):
 
 
 def get_scheduler(optimizer, cfg):
+    batch_size = cfg.b_train_test[0]
     if cfg.name == "StepLR":
         cfg       = cfg.StepLR
         scheduler = StepLR(optimizer, step_size=cfg.step_size, gamma=cfg.gamma)
     elif cfg.name == "OneCycleLR":
         cfg              = cfg.OneCycleLR
-        train_loader_len = (cfg.num_train // cfg.batch_size) + 1
+        train_loader_len = (cfg.num_train // batch_size) + 1
         scheduler        = OneCycleLR(optimizer, max_lr=cfg.lr, epochs=cfg.epochs, steps_per_epoch=train_loader_len)
     elif cfg.name == 'CosineAnnealingLR':
         cfg = cfg.CosineAnnealingLR
-        train_loader_len = (cfg.num_train // cfg.batch_size) + 1
+        train_loader_len = (cfg.num_train // batch_size) + 1
         scheduler        = CosineAnnealingLR(optimizer, T_max=cfg.epochs*train_loader_len)
     elif cfg.name == 'milestones':
         cfg           = cfg.milestones
@@ -183,9 +184,9 @@ class ModuleTemplate(pl.LightningModule):
         count_parameters(self.model)
         self.criterion  = LpLoss(size_average=False)
 
-        self.ntrain     = params_model.ntrain
-        self.ntest      = params_model.ntest
-        self.batch_size = params_scheduler.batch_size
+        self.ntrain       = params_model.ntrain
+        self.ntest        = params_model.ntest
+        self.b_train_test = params_scheduler.b_train_test
 
         self.is_sync_dist = torch.cuda.device_count() > 1
         self.train_start_time = None
@@ -198,7 +199,11 @@ class ModuleTemplate(pl.LightningModule):
         train_end_time = time.time()
         epoch_time = train_end_time - self.train_start_time
         self.epoch_times.append(epoch_time)
-        self.log("train/epoch_time", epoch_time, sync_dist=self.is_sync_dist, batch_size=self.batch_size, on_step=False, on_epoch=True, reduce_fx=torch.sum)
+        self.log(
+            "train/epoch_time", epoch_time, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.mean
+        )
 
     def on_train_end(self):
         avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times)
@@ -219,28 +224,27 @@ class ModuleTemplate(pl.LightningModule):
     def training_step(self, batch: Any, batch_idx: int):
         full_loss, loss = self.step(batch)
         self.log(
-            "train/full_loss", full_loss,
+            "train/full_loss", full_loss/self.ntrain,
             sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.mean,
-            batch_size=self.batch_size
+            on_epoch=True, reduce_fx=torch.sum,
         )
         return {"loss": loss}
     
     def validation_step(self, batch: Any, batch_idx: int):
         full_loss = self.rollout(batch)
         self.log(
-            "validation/full_loss", full_loss,
+            "validation/full_loss", full_loss/self.ntest,
             sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.mean,
+            on_epoch=True, reduce_fx=torch.sum,
         )
         return {"loss": full_loss}
 
     def test_step(self, batch: Any, batch_idx: int):
         full_loss = self.rollout(batch)
         self.log(
-            "test/full_loss", full_loss,
+            "test/full_loss", full_loss/self.ntest,
             sync_dist=self.is_sync_dist, on_step=False,
-            on_epoch=True, reduce_fx=torch.mean,
+            on_epoch=True, reduce_fx=torch.sum,
         )
         return {"loss": full_loss}
 
@@ -251,7 +255,8 @@ class IPOTModule(ModuleTemplate):
         B, HW, Ti = xx.shape
         _, _,  To = yy.shape
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task)
         #agent_mask = random_false_shared(mask_.clone()) # NSv-5
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
@@ -455,6 +460,7 @@ class OursModule(ModuleTemplate):
         reg  /= psi_K_psi_diag.numel()
         loss = loss + self.alpha*reg
         return loss
+    
     def step(self, batch: Any):
         mask, pos, xx, yy, pos_ref, task = batch
         B, HW,Ti = xx.shape

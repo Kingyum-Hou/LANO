@@ -1,19 +1,16 @@
 name: OneCycleLR
+b_train_test: ${datamodule.b_train_test}
 StepLR:
   step_size: 200
   gamma:     0.5
-  batch_size: ${datamodule.b_train_test[0]}
 OneCycleLR:
   lr:         ${optim.lr}
   epochs:     ${trainer.max_epochs}
   num_train:  ${datamodule.n_train_test[0]} 
-  batch_size: ${datamodule.b_train_test[0]}
 CosineAnnealingLR:
   epochs:     ${trainer.max_epochs}
   num_train:  ${datamodule.n_train_test[0]} 
-  batch_size: ${datamodule.b_train_test[0]}
 milestones:
   epochs:        ${trainer.max_epochs}
   gamma:         0.5
   step_interval: 250
-  batch_size:    ${datamodule.b_train_test[0]}

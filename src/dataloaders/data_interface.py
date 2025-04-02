@@ -6,6 +6,7 @@ from typing import Optional
 from dataloaders.ns import get_NS, NSDataset
 from dataloaders.era5 import get_ERA5, ERA5Dataset
 from dataloaders.swe import get_SWE, SWEDataset
+from dataloaders.diffusion import get_DIFFUSION, DIFFUSIONDataset
 
 
 class NS_DataModule(pl.LightningDataModule):
@@ -130,6 +131,51 @@ class SWE_DataModule(pl.LightningDataModule):
         train_data, test_data = get_SWE(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
         self.train_data = SWEDataset(*train_data, self.task, is_train=True)
         self.test_data  = SWEDataset(*test_data,  self.task, is_train=False)
+        del train_data, test_data
+
+    def train_dataloader(self):
+        return DataLoader(dataset=self.train_data, batch_size=self.b_train, num_workers=self.num_workers, shuffle=True)
+
+    def val_dataloader(self):
+        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+
+    def test_dataloader(self):
+        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+
+
+class DIFFUSION_DataModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        name: str,           
+        data_dir: str,    
+        task: str           = "task3",
+        missing_rate: float = 0.,
+        n_train_test: list  = [1000, 100],
+        b_train_test: list  = [16, 16],
+        num_workers: int    = 4,
+        space_size: list    = [64, 64],
+        space_dim: int      = 2,
+        T_all: int          = 20,
+        downsample: int     = 1,
+        ref: int            = 64,
+    ):
+        super().__init__()
+        self.name         = name
+        self.data_dir     = data_dir
+        self.task         = task
+        self.missing_rate = missing_rate
+        self.n_train, self.n_test = n_train_test
+        self.b_train, self.b_test = b_train_test
+        self.num_workers  = num_workers
+        self.T_all        = T_all
+        self.ref          = ref
+        self.space_size   = space_size
+        self.downsample   = downsample
+
+    def setup(self, stage: Optional[str]=None):
+        train_data, test_data = get_DIFFUSION(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
+        self.train_data = DIFFUSIONDataset(*train_data, self.task, is_train=True)
+        self.test_data  = DIFFUSIONDataset(*test_data,  self.task, is_train=False)
         del train_data, test_data
 
     def train_dataloader(self):
