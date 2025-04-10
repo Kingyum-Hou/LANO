@@ -197,7 +197,7 @@ def load_model(model_savePath, model_saveName, model):
     return model
 
 
-def torch2dgrid(num_x, num_y, bot=(0, 0), top=(1, 1), type='ij'):
+def get_pos(num_x, num_y, bot=(0, 0), top=(1, 1), type='ij'):
         x_bot, y_bot = bot
         x_top, y_top = top
         x_arr = torch.linspace(x_bot, x_top, steps=num_x)
@@ -261,7 +261,7 @@ class MatReader(object):
         self.to_float = to_float
 
 
-def get_grid(H, W, ref, bot=(0, 0), top=(1, 1), type='ij', batchsize=1):
+def get_pos_ref(H, W, ref, bot=(0, 0), top=(1, 1), type='ij'):
         """
         Generates a grid of positions and computes the Euclidean distance between 
         each point in the grid and a reference grid.
@@ -281,15 +281,15 @@ def get_grid(H, W, ref, bot=(0, 0), top=(1, 1), type='ij', batchsize=1):
         x_top, y_top = top
         size_x, size_y = H, W
         gridx = torch.tensor(np.linspace(x_bot, x_top, size_x), dtype=torch.float)
-        gridx = gridx.reshape(1, size_x, 1, 1).repeat([batchsize, 1, size_y, 1])
+        gridx = gridx.reshape(1, size_x, 1, 1).repeat([1, 1, size_y, 1])
         gridy = torch.tensor(np.linspace(y_bot, y_top, size_y), dtype=torch.float)
-        gridy = gridy.reshape(1, 1, size_y, 1).repeat([batchsize, size_x, 1, 1])
+        gridy = gridy.reshape(1, 1, size_y, 1).repeat([1, size_x, 1, 1])
         grid = torch.cat((gridx, gridy), dim=-1)  # B H W 2
 
         gridx = torch.tensor(np.linspace(x_bot, x_top, ref), dtype=torch.float)
-        gridx = gridx.reshape(1, ref, 1, 1).repeat([batchsize, 1, ref, 1])
+        gridx = gridx.reshape(1, ref, 1, 1).repeat([1, 1, ref, 1])
         gridy = torch.tensor(np.linspace(y_bot, y_top, ref), dtype=torch.float)
-        gridy = gridy.reshape(1, 1, ref, 1).repeat([batchsize, ref, 1, 1])
+        gridy = gridy.reshape(1, 1, ref, 1).repeat([1, ref, 1, 1])
         grid_ref = torch.cat((gridx, gridy), dim=-1)  # B H W 8 8 2
 
         pos = torch.sqrt(
@@ -298,7 +298,7 @@ def get_grid(H, W, ref, bot=(0, 0), top=(1, 1), type='ij', batchsize=1):
                         grid_ref[:, None, None, :, :, :]) ** 2, 
                         dim=-1
                     )
-                ).reshape(batchsize, size_x, size_y, ref * ref).contiguous()
+                ).reshape(1, size_x, size_y, ref * ref).contiguous()
         return pos
 
 

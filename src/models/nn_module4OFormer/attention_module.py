@@ -321,7 +321,7 @@ class CrossLinearAttention(nn.Module):
                  init_method='orthogonal',  # ['xavier', 'orthogonal']
                  init_gain=None,
                  relative_emb_dim=2,
-                 min_freq=1 / 64,  # 1/64 is for 64 x 64 ns2d,
+                 min_freq=1 / 64,
                  cat_pos=False,
                  pos_dim=2,
                  ):
@@ -410,8 +410,8 @@ class CrossLinearAttention(nn.Module):
     def norm_wrt_domain(self, x, norm_fn):
         b = x.shape[0]
         return rearrange(
-            norm_fn(rearrange(x, 'b h n d -> (b h) d n')),
-            '(b h) d n -> b h n d', b=b)
+            norm_fn(rearrange(x, 'b h n d -> (b h) n d')),
+            '(b h) n d -> b h n d', b=b)
 
     def forward(self, x, z, x_pos=None, z_pos=None):
         # x (z^T z)

@@ -1,7 +1,7 @@
 import torch
 from scipy import io as scio
 from model_interface import get_model
-from tools import torch2dgrid, get_grid
+from tools import get_pos, get_pos_ref
 from dataloaders.ns import add_point_missing
 import numpy as np
 import matplotlib.pyplot as plt
@@ -70,7 +70,7 @@ test_au = torch.tensor(data[-200:, ::1, ::1, :20], dtype=torch.float).reshape(20
 test_u = test_au[..., 10:]
 test_au_withMissing, test_mask = add_point_missing(test_au, int(np.round(4096*missing_rate)))
 test_a = test_au_withMissing[..., :10]
-pos = get_grid(64, 64, 8, batchsize=1).contiguous()
+pos = get_pos_ref(64, 64, 8, batchsize=1).contiguous()
 test_pos = pos.repeat(200, 1, 1, 1).reshape(200, -1, 8*8)
 
 test_data = [test_mask, test_pos, test_a, test_u]

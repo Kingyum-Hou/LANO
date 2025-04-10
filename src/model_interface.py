@@ -90,7 +90,7 @@ def get_model(cfg):
         )
     elif cfg.name == "FNO":
         model = FNO2d(cfg.modes, cfg.modes, cfg.latent_channel)
-    elif cfg.name == "MIONET":
+    elif cfg.name == "MIONet":
         H, W = cfg.space_size[0], cfg.space_size[1]
         h = int((H / cfg.downsample))
         w = int((W / cfg.downsample))
@@ -156,7 +156,9 @@ def get_scheduler(optimizer, cfg):
     elif cfg.name == "OneCycleLR":
         cfg              = cfg.OneCycleLR
         train_loader_len = (cfg.num_train // batch_size) + 1
-        scheduler        = OneCycleLR(optimizer, max_lr=cfg.lr, epochs=cfg.epochs, steps_per_epoch=train_loader_len)
+        valid_keys = {"max_lr", "epochs", "div_factor", "pct_start", "final_div_factor"}
+        scheduler_args = {k: cfg[k] for k in valid_keys if cfg[k] is not None}
+        scheduler        = OneCycleLR(optimizer, steps_per_epoch=train_loader_len, **scheduler_args)
     elif cfg.name == 'CosineAnnealingLR':
         cfg = cfg.CosineAnnealingLR
         train_loader_len = (cfg.num_train // batch_size) + 1
@@ -181,7 +183,7 @@ class ModuleTemplate(pl.LightningModule):
         self.cfg_scheduler = params_scheduler
 
         self.model      = get_model(self.cfg_model)
-        count_parameters(self.model)
+        #count_parameters(self.model)
         self.criterion  = LpLoss(size_average=False)
 
         self.ntrain       = params_model.ntrain
@@ -192,6 +194,13 @@ class ModuleTemplate(pl.LightningModule):
         self.train_start_time = None
         self.epoch_times = []
 
+        self.curriculum_steps = params_optim.curriculum_steps
+        self.curriculum_ratio = params_optim.curriculum_ratio
+        self.curriculum_init  = params_optim.curriculum_init
+        self.max_epochs       = params_optim.max_epochs
+        self.epoch_iterations = 0.
+        self.T_output         = params_optim.T_all // 2
+
     def on_train_epoch_start(self):
         self.train_start_time = time.time()
 
@@ -199,8 +208,14 @@ class ModuleTemplate(pl.LightningModule):
         train_end_time = time.time()
         epoch_time = train_end_time - self.train_start_time
         self.epoch_times.append(epoch_time)
+        self.epoch_iterations += 1.
         self.log(
             "train/epoch_time", epoch_time, 
+            sync_dist=self.is_sync_dist, on_step=False, 
+            on_epoch=True, reduce_fx=torch.mean
+        )
+        self.log(
+            "train/curriculum_steps", self.get_curriculum_steps(),
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.mean
         )
@@ -247,6 +262,19 @@ class ModuleTemplate(pl.LightningModule):
             on_epoch=True, reduce_fx=torch.sum,
         )
         return {"loss": full_loss}
+    
+    def get_curriculum_steps(self):
+        # curriculum_init = 1. / n
+        if self.curriculum_steps > 0 and self.epoch_iterations < int(self.curriculum_ratio * self.max_epochs):
+            progress = self.epoch_iterations / (self.curriculum_init * self.curriculum_ratio * self.max_epochs)
+            curriculum_steps = self.curriculum_steps + \
+                int(
+                    max(0, progress - 1.) * \
+                    ((self.T_output - self.curriculum_steps) / (int(1./self.curriculum_init) - 1))
+                    )
+        else:
+            curriculum_steps = self.T_output
+        return curriculum_steps
 
     
 class IPOTModule(ModuleTemplate):
@@ -364,7 +392,7 @@ class MIONetModule(ModuleTemplate):
         inputs.append(torch.linspace(1, To, steps=To, device=xx.device).reshape(1, To, 1).repeat(HW, 1, 1).reshape(HW*To, 1))
         pred = self.model(inputs, To)
         pred = pred.reshape(yy.shape)
-        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        full_loss = self.criterion(pred.view(B, -1), yy.view(B, -1))
         return full_loss
     
 
@@ -382,7 +410,9 @@ class OFormerModule(ModuleTemplate):
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
 
-        pred      = self.model(agent_aPos, agent_pos, pos_pred, To)
+        curriculum_steps = self.get_curriculum_steps()
+        u         = u[..., :curriculum_steps]
+        pred      = self.model(agent_aPos, agent_pos, pos_pred, curriculum_steps)
         loss = self.criterion(
             pred.                                   view(B, -1),
             torch.masked_select(u,    mask_.bool()).view(B, -1)

@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import torch2dgrid, get_grid, reshape2blocks, reshape2data
+from tools import get_pos, get_pos_ref, reshape2blocks, reshape2data
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
@@ -61,11 +61,11 @@ def get_DIFFUSION(
     train_xy = train_xy.reshape(num_train, -1, T_all)
     test_xy  = test_xy. reshape(num_test,  -1, T_all)
     H, W = int(H//downsample), int(W//downsample)
-    pos       = torch2dgrid(H, W).unsqueeze(0).contiguous()
+    pos       = get_pos(H, W, bot=(-1, 1), top=(1, 1)).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
 
-    pos_ref   = get_grid(H, W, ref, batchsize=1).contiguous()
+    pos_ref   = get_pos_ref(H, W, ref, bot=(-1, -1), top=(1, 1)).contiguous()
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 

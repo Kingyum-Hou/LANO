@@ -5,13 +5,12 @@ os.environ["NUMEXPR_MAX_THREADS"] = "2"
 import torch
 import numpy as np
 from torch.utils.data import Dataset
-from tools import torch2dgrid, get_grid, reshape2blocks, reshape2data
+from tools import get_pos, get_pos_ref, reshape2blocks, reshape2data
 import xarray as xr
 
 
 def add_point_missing(data, num_sampling):
     B, HW, _   = data.shape
-
     valid_data = data.clone()
     valid_mask = torch.ones_like(valid_data)
     for i in range(B):
@@ -20,19 +19,18 @@ def add_point_missing(data, num_sampling):
         valid_mask[i, indices_addMissing, ...] = 0.
     return valid_data, valid_mask
 
+
 def add_patch_missing(data, missing_rate, space_size, patch_size=4):
     patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
     total_patches = np.prod(patch_num)
     patch_holes_num = int(np.round(total_patches * missing_rate))
     B = data.shape[0]
-
     valid_data = reshape2blocks(data, patch_size, patch_num)
     valid_mask = torch.ones_like(valid_data)
     for i in range(B):
         indices_addHoles = torch.randperm(total_patches)[:patch_holes_num]
         valid_data[i, indices_addHoles, ...] = 0.
         valid_mask[i, indices_addHoles, ...] = 0.
-    
     valid_data = reshape2data(valid_data, patch_size, patch_num)
     valid_mask = reshape2data(valid_mask, patch_size, patch_num)
     return valid_data, valid_mask
@@ -51,7 +49,6 @@ def get_ERA5(
     Tn = 7 * int(data.shape[0] / 7)
     data = data[:, :720, :]
     data = data[:, ::downsample, ::downsample]
-
     data_list = []
     for i in range(0, data.shape[0]-14, 7):
         data_list.append(data[i:i+14, ...])
@@ -61,11 +58,11 @@ def get_ERA5(
     train_xy = data[:num_train, ...].reshape(num_train, -1, 14)
     test_xy  = data[-num_test:, ...].reshape(num_test,  -1, 14)
     
-    pos = torch2dgrid(h, w, bot=(-0.5, 0), top=(0.5, 2)).unsqueeze(0).contiguous()
+    pos = get_pos(h, w, bot=(-0.5, 0), top=(0.5, 2)).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test, -1, 2)
 
-    pos_ref = get_grid(h, w, ref, batchsize=1).contiguous()
+    pos_ref = get_pos_ref(h, w, ref, bot=(-0.5, 0), top=(0.5, 2)).contiguous()
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 

@@ -241,7 +241,7 @@ class KernelIntegrator(nn.Module):
         psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
 
         # conjugate operator
-        #query = key = value = self.to_qkv(psi).chunk(3, dim = -1)
+        #query, key, value = self.to_qkv(psi).chunk(3, dim = -1)
         #query = key = value = psi
         #psi = memory_efficient_attention(query, key, value)
         psi = self.conjugate(psi)

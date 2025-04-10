@@ -1,7 +1,7 @@
 import torch
 from scipy import io as scio
 from model_interface import get_model
-from tools import torch2dgrid, reshape2blocks, reshape2data
+from tools import get_pos, reshape2blocks, reshape2data
 from dataloaders.ns import add_point_missing, add_patch_missing
 import numpy as np
 import matplotlib.pyplot as plt
@@ -103,7 +103,7 @@ test_x = test_xy_withMissing[..., :7]
 test_y = test_xy            [..., 7:]
 
 # pos
-pos = torch2dgrid(h, w, bot=(-0.5, 0), top=(0.5, 2)).unsqueeze(0).contiguous()
+pos = get_pos(h, w, bot=(-0.5, 0), top=(0.5, 2)).unsqueeze(0).contiguous()
 test_pos = pos.repeat(num_test, 1, 1, 1).reshape(num_test, -1, 2)
 
 # combine data

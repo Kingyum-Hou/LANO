@@ -1,6 +1,6 @@
 import torch
 from model_interface import get_model
-from tools import get_grid
+from tools import get_pos_ref
 from dataloaders.era5 import add_point_missing, add_patch_missing
 import numpy as np
 import matplotlib.pyplot as plt
@@ -101,7 +101,7 @@ test_y  = test_xy[..., 7:]
 test_xy_withMissing, test_mask = add_patch_missing(test_xy, missing_rate, [90, 180], patch_size=3)
 test_x = test_xy_withMissing[..., :7]
 
-pos = get_grid(h, w, 8, batchsize=1).contiguous()
+pos = get_pos_ref(h, w, 8, batchsize=1).contiguous()
 test_pos = pos.repeat(num_test, 1, 1, 1).reshape(num_test, -1, 8*8)
 
 batch_size = 10

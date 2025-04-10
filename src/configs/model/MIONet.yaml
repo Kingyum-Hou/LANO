@@ -3,12 +3,15 @@ params_model:
   name: MIONet
   activation: 'relu'
   initializer: 'default'
-  input_size: 10
+  input_size:
   space_dim:  ${datamodule.space_dim}
-  space_size: [64, 64]
+  space_size: ${datamodule.space_size}
   missing_rate: ${datamodule.missing_rate}
   ref: 8
+  sensors:
   ntrain: ${datamodule.n_train_test[0]}
   ntest: ${datamodule.n_train_test[1]}
+  monitor: train/full_loss
+  downsample: ${datamodule.downsample}
 params_optim: ${optim}
 params_scheduler: ${scheduler}
