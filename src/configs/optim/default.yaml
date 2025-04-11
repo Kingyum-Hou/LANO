@@ -3,7 +3,7 @@ lr: 1e-3
 weight_decay: 1e-5
 step_size: 250
 curriculum_steps: 5
-curriculum_init: 0.33
+curriculum_init: 0.5
 T_all: ${datamodule.T_all}
-curriculum_ratio: 0.5
+curriculum_ratio: 0.2
 max_epochs: ${trainer.max_epochs}

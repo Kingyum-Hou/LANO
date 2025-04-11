@@ -1,5 +1,5 @@
 wandb:
   _target_: pytorch_lightning.loggers.wandb.WandbLogger
-  project: ANOT
+  project: COMsolver-baselines
   mode: 'online'
   save_dir: ${hydra:run.dir}

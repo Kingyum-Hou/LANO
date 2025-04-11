@@ -405,7 +405,7 @@ class OFormerModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16])
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -503,7 +503,10 @@ class OursModule(ModuleTemplate):
         #agent_mask = mask_.clone()  # no agent mission
         pred_trajectory = []
         loss = 0.
-        for t in range(0, To):
+
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        for t in range(0, curriculum_steps):
             y     = yy[..., t:t+1]
             pred  = self.model(pos_ref, xx, agent_mask)
             loss += self.criterion(

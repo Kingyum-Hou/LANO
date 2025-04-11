@@ -1,8 +1,8 @@
 defaults:
   - _self_
-  - hydra:      default   # ResMLP SirenNet FFN_P FFN_G MMGNet
-  - datamodule: ns_v-5    # gst sst
-  - model:      FNO       # ResMLP SirenNet FFN_P FFN_G MMGNet
+  - hydra:      default
+  - datamodule: ns
+  - model:      FNO
   - optim:      default
   - scheduler:  default
   - callback:   default
