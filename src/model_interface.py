@@ -283,18 +283,20 @@ class IPOTModule(ModuleTemplate):
         B, HW, Ti = xx.shape
         _, _,  To = yy.shape
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
         agent_mask = random_false_shared(mask_.clone(), task)
-        #agent_mask = random_false_shared(mask_.clone()) # NSv-5
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         pos_pred  = pos[0].clone()
         x_pos_had = torch.cat([x_had, pos_had], dim=-1)
-        pred = self.model(x_pos_had, pos_pred, To)
+
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        pred = self.model(x_pos_had, pos_pred, curriculum_steps)
         pred.reshape(yy.shape)
         loss = self.criterion(
-            torch.masked_select(pred, mask[..., :To].bool()).view(B, -1), 
-            torch.masked_select(yy,   mask[..., :To].bool()).view(B, -1)
+            torch.masked_select(pred, mask[..., :curriculum_steps].bool()).view(B, -1), 
+            torch.masked_select(yy,   mask[..., :curriculum_steps].bool()).view(B, -1)
         )
         full_loss = loss
         return full_loss, loss
