@@ -9,6 +9,7 @@ import warnings
 import h5py
 import scipy
 from pytorch_lightning.callbacks import Callback
+import torch.nn.functional as F
 
 
 def cli(args):
@@ -65,6 +66,28 @@ def count_parameters(model):
         total_params += params
     print(f"Total Trainable Params: {total_params:,} ({total_params / 1e6:.2f}M)")
     return total_params
+
+
+def central_diff(x: torch.Tensor, h=64, w=64):
+    # assuming PBC
+    # x: (batch, n, seq_len), h is the step size, assuming n = h*w
+    x = rearrange(x, 'b (h w) t -> b t h w', h=h, w=w)
+    h = 1./64.
+    x = F.pad(x,
+              (1, 1, 1, 1), mode='circular')  # [b t h+2 w+2]
+    grad_x = (x[..., 1:-1, 2:] - x[..., 1:-1, :-2]) / (2*h)  # f(x+h) - f(x-h) / 2h
+    grad_y = (x[..., 2:, 1:-1] - x[..., :-2, 1:-1]) / (2*h)  # f(x+h) - f(x-h) / 2h
+    return grad_x, grad_y
+
+
+def rel_l2norm_loss(x, y):
+    #   x, y [b, c, t, n]
+    eps = 1e-6
+    y_norm = (y**2).mean(dim=-1) + eps
+    diff = ((x-y)**2).mean(dim=-1)
+    diff = diff / y_norm   # [b, c, t]
+    diff = diff.sqrt().mean()
+    return diff
 
 
 # loss function with rel/abs Lp loss

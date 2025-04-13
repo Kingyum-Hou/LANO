@@ -39,7 +39,7 @@ class ModelParams():
     def __init__(self):
         self.name = 'OFormer'
         self.in_channels = 12
-        self.encoder_emb_dim = 96
+        self.encoder_emb_dim = 128
         self.out_seq_emb_dim = 192
         self.encoder_heads = 1
         self.encoder_depth = 5
@@ -53,12 +53,12 @@ class ModelParams():
         self.r = 64
 
 model = get_model(ModelParams()).to(device)
-#model_path = 'save/NS/OFormer/task3_mr=5/best-v1.ckpt'
-#model_path = 'save/NS/OFormer/task3_mr=25/best-v1.ckpt'
-#model_path = 'save/NS/OFormer/task3_mr=50/best.ckpt'
+#model_path = 'save/NS/OFormer/t3_mr0.05/best.ckpt'
+#model_path = 'save/NS/OFormer/t3_mr0.25/best-v1.ckpt'
+model_path = 'save/NS/OFormer/t3_mr0.5/best-v1.ckpt'
 #model_path = 'save/NS/OFormer/task4_mr=5/best-v2.ckpt'
 #model_path = 'save/NS/OFormer/task4_mr=25/best-v2.ckpt'
-model_path = 'save/NS/OFormer/task4_mr=50/best-v1.ckpt'
+#model_path = 'save/NS/OFormer/task4_mr=50/best-v1.ckpt'
 model_dict = torch.load(model_path, map_location=device)['state_dict']
 model_dict = {k.replace('model.', ''): v for k, v in model_dict.items()}
 print(model.load_state_dict(model_dict, strict=False))
@@ -72,7 +72,7 @@ test_pred = model(test_aPos_had, test_pos_had, test_pos_pred, test_To)
 
 
 # load data
-data_path = '/data/jingren/repository/dataset/Physics-informed-neural-network/PDE_datasets/NavierStokes_V1e-5_N1200_T20.mat'
+data_path = '/data/jingren/repository/dataset/PDE_datasets/NavierStokes_V1e-5_N1200_T20.mat'
 data = scio.loadmat(data_path)['u']
 test_au = torch.tensor(data[-200:, ::1, ::1, :20], dtype=torch.float).reshape(200, -1, 20)
 test_u = test_au[..., 10:]
@@ -123,7 +123,7 @@ with torch.no_grad():
                 axes[2, i].set_title(f'Time {i+1}_error')
                 axes[2, i].axis('off')
             plt.show()
-            plt.savefig(f'imgs/Ours_{batch_idx}.png')
+            plt.savefig(f'imgs/OFormer_{batch_idx}.png')
             plt.clf()
             #plot_flag = False
 print('ok!')

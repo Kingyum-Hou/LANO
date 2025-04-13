@@ -61,11 +61,11 @@ def get_SWE(
     test_xy  = test_xy.reshape(num_test,   -1, T_all)
     H, W = int(H//downsample), int(W//downsample)
 
-    pos       = get_pos(H, W, bot=(-2.5, -2.5), top=(2.5, 2.5)).unsqueeze(0).contiguous()
+    pos       = get_pos(H, W).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, 2)
 
-    pos_ref   = get_pos_ref(H, W, ref, bot=(-2.5, -2.5), top=(2.5, 2.5)).contiguous()
+    pos_ref   = get_pos_ref(H, W, ref).contiguous()
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 

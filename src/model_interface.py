@@ -12,7 +12,7 @@ from models.Ours import OursModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
-from tools import LpLoss, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters
+from tools import LpLoss, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
 import math
@@ -201,6 +201,8 @@ class ModuleTemplate(pl.LightningModule):
         self.epoch_iterations = 0.
         self.T_output         = params_optim.T_all // 2
 
+        self.use_grad         = params_optim.use_grad
+
     def on_train_epoch_start(self):
         self.train_start_time = time.time()
 
@@ -214,11 +216,12 @@ class ModuleTemplate(pl.LightningModule):
             sync_dist=self.is_sync_dist, on_step=False, 
             on_epoch=True, reduce_fx=torch.mean
         )
-        self.log(
-            "train/curriculum_steps", self.get_curriculum_steps(),
-            sync_dist=self.is_sync_dist, on_step=False, 
-            on_epoch=True, reduce_fx=torch.mean
-        )
+        if self.use_grad:
+            self.log(
+                "train/curriculum_steps", self.get_curriculum_steps(),
+                sync_dist=self.is_sync_dist, on_step=False, 
+                on_epoch=True, reduce_fx=torch.mean
+            )
 
     def on_train_end(self):
         avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times)
@@ -255,9 +258,15 @@ class ModuleTemplate(pl.LightningModule):
         return {"loss": full_loss}
 
     def test_step(self, batch: Any, batch_idx: int):
-        full_loss = self.rollout(batch)
+        full_loss      = self.rollout(batch[0])
+        full_loss_high = self.rollout(batch[1])
         self.log(
             "test/full_loss", full_loss/self.ntest,
+            sync_dist=self.is_sync_dist, on_step=False,
+            on_epoch=True, reduce_fx=torch.sum,
+        )
+        self.log(
+            "test/full_loss_high", full_loss_high/self.ntest,
             sync_dist=self.is_sync_dist, on_step=False,
             on_epoch=True, reduce_fx=torch.sum,
         )
@@ -271,7 +280,7 @@ class ModuleTemplate(pl.LightningModule):
                 int(
                     max(0, progress - 1.) * \
                     ((self.T_output - self.curriculum_steps) / (int(1./self.curriculum_init) - 1))
-                    )
+                )
         else:
             curriculum_steps = self.T_output
         return curriculum_steps
@@ -355,7 +364,7 @@ class FNOModule(ModuleTemplate):
 
 
 class MIONetModule(ModuleTemplate):
-    def step(self, batch: Any, is_train=True):
+    def step(self, batch: Any):
         mask, pos, xx, yy, _, task = batch
         B, HW, Ti =   xx.shape
         _,  _,  D = pos.shape
@@ -403,7 +412,7 @@ class OFormerModule(ModuleTemplate):
         mask, pos, a, u, _, task = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
-        pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
+        pos_pred  = pos
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
@@ -416,10 +425,19 @@ class OFormerModule(ModuleTemplate):
         u         = u[..., :curriculum_steps]
         pred      = self.model(agent_aPos, agent_pos, pos_pred, curriculum_steps)
         loss = self.criterion(
-            pred.                                   view(B, -1),
+            torch.masked_select(pred, mask_.bool()).view(B, -1),
             torch.masked_select(u,    mask_.bool()).view(B, -1)
         )
         full_loss = loss
+
+        # missing_rate = 0 available
+        if self.use_grad:
+            u_grad_x,    u_grad_y    = central_diff(u)
+            pred_grad_x, pred_grad_y = central_diff(pred)
+            grad_loss = rel_l2norm_loss(pred_grad_x, u_grad_x) + \
+                        rel_l2norm_loss(pred_grad_y, u_grad_y)
+            loss += 5e-2 * grad_loss
+        
         return full_loss, loss
 
     def rollout(self, batch: Any):
@@ -516,7 +534,7 @@ class OursModule(ModuleTemplate):
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
             psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            loss += 0.1 * self.loss_surrogate(psi1, psi2)
+            loss += 5e-2 * self.loss_surrogate(psi1, psi2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)

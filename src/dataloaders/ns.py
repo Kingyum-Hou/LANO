@@ -105,7 +105,24 @@ def get_NS(
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 
-    if task == "task1":
+    if missing_rate == 0.05:
+        missing_rate_high = 0.25
+    elif missing_rate == 0.25:
+        missing_rate_high = 0.5
+    elif missing_rate == 0.5:
+        missing_rate_high = 0.75
+    else:
+        missing_rate_high = min(0.75, missing_rate*2)
+
+    if task == "task0":
+        train_mask = torch.ones_like(train_au)
+        train_a    = train_au[...,   :10]
+        train_u    = train_au[..., 10:  ]
+        # test
+        test_mask = torch.ones_like(test_au)
+        test_a    = test_au[...,   :10]
+        test_u    = test_au[..., 10:  ]
+    elif task == "task1":
         num_sampling = int(np.round(missing_rate * 4096))
         # train
         train_au, train_mask = add_point_missing(train_au, num_sampling)
@@ -120,7 +137,8 @@ def get_NS(
     elif task == "task2":
         raise NotImplementedError
     elif task == "task3":
-        num_sampling = int(np.round(missing_rate * 4096))
+        num_sampling      = int(np.round(missing_rate      * 4096))
+        num_sampling_high = int(np.round(missing_rate_high * 4096))
         # train
         train_au, train_mask = add_point_missing(train_au, num_sampling)
         train_a  = train_au[...,   :10]
@@ -129,14 +147,9 @@ def get_NS(
         test_au_, test_mask = add_point_missing(test_au, num_sampling)
         test_a   = test_au_[...,   :10]
         test_u   = test_au [..., 10:  ]
-    elif task == "task0":
-        train_mask = torch.ones_like(train_au)
-        train_a    = train_au[...,   :10]
-        train_u    = train_au[..., 10:  ]
-        # test
-        test_mask = torch.ones_like(test_au)
-        test_a    = test_au[...,   :10]
-        test_u    = test_au[..., 10:  ]
+        # test high
+        test_au_high_, test_mask_high = add_point_missing(test_au, num_sampling_high)
+        test_a_high   = test_au_high_[...,   :10]
     elif task == "task4":
         # train
         train_au, train_mask = add_patch_missing(train_au, missing_rate, space_size, patch_size=4)
@@ -146,20 +159,25 @@ def get_NS(
         test_au_, test_mask = add_patch_missing(test_au, missing_rate, space_size, patch_size=4)
         test_a   = test_au_[...,   :10]
         test_u   = test_au [..., 10:  ]
+        # test high
+        test_au_high_, test_mask_high = add_patch_missing(test_au, missing_rate_high, space_size, patch_size=4)
+        test_a_high   = test_au_high_[...,   :10]
     else:
         raise NotImplementedError
-    return (train_mask, train_pos, train_a, train_u, train_pos_ref), (test_mask, test_pos, test_a, test_u, test_pos_ref)
+
+    return (train_mask, train_pos, train_a, train_u, train_pos_ref), \
+           (test_mask, test_pos, test_a, test_u, test_pos_ref), \
+           (test_mask_high, test_a_high)
 
 
 class NSDataset(Dataset):
-    def __init__(self, mask, pos, a, u, pos_ref, task, is_train):
+    def __init__(self, mask, pos, a, u, pos_ref, task):
         self.mask     = mask
         self.pos      = pos
         self.a        = a
         self.u        = u
         self.pos_ref  = pos_ref
         self.task     = task
-        self.is_train = is_train
     
     def __len__(self):
         return self.a.shape[0]
@@ -171,3 +189,29 @@ class NSDataset(Dataset):
         u       = self.u      [idx]
         pos_ref = self.pos_ref[idx]
         return mask, pos, a, u, pos_ref, self.task
+
+
+class NSDataset4test(Dataset):
+    def __init__(self, test_data, test_data_high, task):
+        self.mask     = test_data[0]
+        self.pos      = test_data[1]
+        self.a        = test_data[2]
+        self.u        = test_data[3]
+        self.pos_ref  = test_data[4]
+        self.mask_high     = test_data_high[0]
+        self.a_high        = test_data_high[1]
+        self.task     = task
+
+    def __len__(self):
+        return self.a.shape[0]
+    
+    def __getitem__(self, idx):
+        mask    = self.mask   [idx]
+        pos     = self.pos    [idx]
+        a       = self.a      [idx]
+        u       = self.u      [idx]
+        pos_ref = self.pos_ref[idx]
+        mask_high = self.mask_high[idx]
+        a_high    = self.a_high[idx]
+        return (mask,      pos, a,      u, pos_ref, self.task), \
+               (mask_high, pos, a_high, u, pos_ref, self.task)

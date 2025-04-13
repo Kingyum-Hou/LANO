@@ -58,11 +58,11 @@ def get_ERA5(
     train_xy = data[:num_train, ...].reshape(num_train, -1, 14)
     test_xy  = data[-num_test:, ...].reshape(num_test,  -1, 14)
     
-    pos = get_pos(h, w, bot=(-0.5, 0), top=(0.5, 2)).unsqueeze(0).contiguous()
+    pos = get_pos(h, w).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test, -1, 2)
 
-    pos_ref = get_pos_ref(h, w, ref, bot=(-0.5, 0), top=(0.5, 2)).contiguous()
+    pos_ref = get_pos_ref(h, w, ref).contiguous()
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 
