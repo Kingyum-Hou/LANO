@@ -1,9 +1,9 @@
 _target_:     dataloaders.data_interface.SWE_DataModule
 name:         SWE
-data_dir:     /root/autodl-tmp/2D_rdb_NA_NA.h5
+data_dir:     /data/jingren/repository/dataset/PDEBench/2D/shallow-water/2D_rdb_NA_NA.h5
 task:         task3
 missing_rate: 0.5
-n_train_test: [500, 100] # sst shape   (366, 901, 1001)
+n_train_test: [500, 100]
 b_train_test: [2, 2]
 num_workers:  2
 space_size:   [128, 128]

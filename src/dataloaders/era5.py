@@ -66,8 +66,18 @@ def get_ERA5(
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 
+    if missing_rate == 0.05:
+        missing_rate_high = 0.25
+    elif missing_rate == 0.25:
+        missing_rate_high = 0.5
+    elif missing_rate == 0.5:
+        missing_rate_high = 0.75
+    else:
+        missing_rate_high = min(0.75, missing_rate*2)
+
     if task == "task3":
-        num_sampling = int(np.round(missing_rate * h * w))
+        num_sampling      = int(np.round(missing_rate      * h * w))
+        num_sampling_high = int(np.round(missing_rate_high * h * w))
         # train
         train_xy, train_mask = add_point_missing(train_xy, num_sampling)
         train_x = train_xy[...,  :7]
@@ -75,7 +85,10 @@ def get_ERA5(
         # test
         test_xy_, test_mask = add_point_missing(test_xy, num_sampling)
         test_x  = test_xy_[...,  :7]
-        test_y  = test_xy[..., 7: ]
+        test_y  = test_xy [..., 7: ]
+        # test high
+        test_xy_high_, test_mask_high = add_point_missing(test_xy, num_sampling_high)
+        test_x_high = test_xy_high_[...,  :7]
     elif task == "task4":
         # train
         train_xy, train_mask = add_patch_missing(train_xy, missing_rate, (h, w), patch_size=3)
@@ -85,20 +98,24 @@ def get_ERA5(
         test_xy_, test_mask = add_patch_missing(test_xy, missing_rate, (h, w), patch_size=3)
         test_x = test_xy_[...,  :7]
         test_y = test_xy [..., 7: ]
+        # test high
+        test_xy_high_, test_mask_high = add_patch_missing(test_xy, missing_rate_high, (h, w), patch_size=3)
+        test_x_high = test_xy_high_[...,  :7]
     else:
         raise NotImplementedError
-    return (train_mask, train_pos, train_x, train_y, train_pos_ref), (test_mask, test_pos, test_x, test_y, test_pos_ref)
+    return (train_mask, train_pos, train_x, train_y, train_pos_ref), \
+           (test_mask, test_pos, test_x, test_y, test_pos_ref), \
+           (test_mask_high, test_x_high)
 
 
 class ERA5Dataset(Dataset):
-    def __init__(self, mask, pos, x, y, pos_ref, task, is_train):
+    def __init__(self, mask, pos, x, y, pos_ref, task):
         self.mask = mask
         self.pos  = pos
         self.x    = x
         self.y    = y
         self.pos_ref = pos_ref
         self.task = task
-        self.is_train = is_train
 
     def __len__(self):
         return self.x.shape[0]
@@ -110,3 +127,29 @@ class ERA5Dataset(Dataset):
         y    = self.y[idx]
         pos_ref = self.pos_ref[idx]
         return mask, pos, x, y, pos_ref, self.task
+
+
+class ERA5Dataset4test(Dataset):
+    def __init__(self, test_data, test_data_high, task):
+        self.mask     = test_data[0]
+        self.pos      = test_data[1]
+        self.x        = test_data[2]
+        self.y        = test_data[3]
+        self.pos_ref  = test_data[4]
+        self.mask_high     = test_data_high[0]
+        self.x_high        = test_data_high[1]
+        self.task     = task
+
+    def __len__(self):
+        return self.x.shape[0]
+    
+    def __getitem__(self, idx):
+        mask    = self.mask   [idx]
+        pos     = self.pos    [idx]
+        x       = self.x      [idx]
+        y       = self.y      [idx]
+        pos_ref = self.pos_ref[idx]
+        mask_high = self.mask_high[idx]
+        x_high    = self.x_high[idx]
+        return (mask,      pos, x,      y, pos_ref, self.task), \
+               (mask_high, pos, x_high, y, pos_ref, self.task)

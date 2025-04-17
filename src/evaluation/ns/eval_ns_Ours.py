@@ -51,12 +51,7 @@ class ModelParams():
         self.mlp_ratio = 1
 
 model = get_model(ModelParams()).to(device)
-#model_path = 'save/NS/Ours/task3_mr=50/best-v4.ckpt'
-#model_path = 'save/NS/Ours/task3_mr=25/best-v4.ckpt'
-#model_path = 'save/NS/Ours/task3_mr=5/best-v5.ckpt'
-#model_path = 'save/NS/Ours/task4_mr=5/best-v2.ckpt'
-#model_path = 'save/NS/Ours/task4_mr=25/best-v4.ckpt'
-model_path = 'save/NS/Ours/task4_mr=50/best-v3.ckpt'
+model_path = 'save/NS/Ours/NS_Ours_t3_mr0.25.ckpt'
 model_dict = torch.load(model_path, map_location=device)['state_dict']
 model_dict = {k.replace('model.', ''): v for k, v in model_dict.items()}
 print(model.load_state_dict(model_dict, strict=False))
@@ -73,10 +68,10 @@ data_path = '/data/jingren/repository/dataset/PDE_datasets/NavierStokes_V1e-5_N1
 data = scio.loadmat(data_path)['u']
 test_au = torch.tensor(data[-200:, ::1, ::1, :20], dtype=torch.float).reshape(200, -1, 20)
 test_u = test_au[..., 10:]
-#test_au_withMissing, test_mask = add_point_missing(test_au, int(np.round(4096*missing_rate)))
-test_au_withMissing, test_mask = add_patch_missing(test_au, missing_rate, [64, 64], patch_size=4)
+test_au_withMissing, test_mask = add_point_missing(test_au, int(np.round(4096*missing_rate)))
+#test_au_withMissing, test_mask = add_patch_missing(test_au, missing_rate, [64, 64], patch_size=4)
 test_a = test_au_withMissing[..., :10]
-pos = get_pos_ref(64, 64, 8, batchsize=1).contiguous()
+pos = get_pos_ref(64, 64, 8).contiguous()
 test_pos = pos.repeat(200, 1, 1, 1).reshape(200, -1, 8*8)
 
 test_data = [test_mask, test_pos, test_a, test_u]

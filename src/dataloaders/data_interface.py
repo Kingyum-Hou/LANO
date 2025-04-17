@@ -4,8 +4,8 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 from typing import Optional
 from dataloaders.ns import get_NS, NSDataset, NSDataset4test
-from dataloaders.era5 import get_ERA5, ERA5Dataset
-from dataloaders.swe import get_SWE, SWEDataset
+from dataloaders.era5 import get_ERA5, ERA5Dataset, ERA5Dataset4test
+from dataloaders.swe import get_SWE, SWEDataset, SWEDataset4test
 from dataloaders.diffusion import get_DIFFUSION, DIFFUSIONDataset, DIFFUSIONDataset4test
 
 
@@ -84,19 +84,20 @@ class ERA5_DataModule(pl.LightningDataModule):
         self.downsample   = downsample
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data = get_ERA5(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
-        self.train_data = ERA5Dataset(*train_data, self.task, is_train=True)
-        self.test_data  = ERA5Dataset(*test_data,  self.task, is_train=False)
+        train_data, test_data, test_data_high = get_ERA5(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
+        self.train_data = ERA5Dataset(*train_data, self.task)
+        self.valid_data = ERA5Dataset(*test_data,  self.task)
+        self.test_data  = ERA5Dataset4test(test_data, test_data_high, self.task)
         del train_data, test_data
 
     def train_dataloader(self):
         return DataLoader(dataset=self.train_data, batch_size=self.b_train, num_workers=self.num_workers, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(dataset=self.valid_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
 
     def test_dataloader(self):
-        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(dataset=self.test_data,  batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
 
 
 class SWE_DataModule(pl.LightningDataModule):
@@ -129,19 +130,20 @@ class SWE_DataModule(pl.LightningDataModule):
         self.downsample   = downsample
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data = get_SWE(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
-        self.train_data = SWEDataset(*train_data, self.task, is_train=True)
-        self.test_data  = SWEDataset(*test_data,  self.task, is_train=False)
-        del train_data, test_data
+        train_data, test_data, test_data_high = get_SWE(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
+        self.train_data = SWEDataset(*train_data, self.task)
+        self.valid_data = SWEDataset(*test_data,  self.task)
+        self.test_data  = SWEDataset4test(test_data, test_data_high, self.task)
+        del train_data, test_data, test_data_high
 
     def train_dataloader(self):
         return DataLoader(dataset=self.train_data, batch_size=self.b_train, num_workers=self.num_workers, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(dataset=self.valid_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
 
     def test_dataloader(self):
-        return DataLoader(dataset=self.test_data, batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
+        return DataLoader(dataset=self.test_data,  batch_size=self.b_test, num_workers=self.num_workers, shuffle=False)
 
 
 class DIFFUSION_DataModule(pl.LightningDataModule):

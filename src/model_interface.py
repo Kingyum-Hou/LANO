@@ -293,7 +293,7 @@ class IPOTModule(ModuleTemplate):
         _, _,  To = yy.shape
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task)
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         pos_pred  = pos[0].clone()
@@ -412,11 +412,14 @@ class OFormerModule(ModuleTemplate):
         mask, pos, a, u, _, task = batch
         B,  _, Ti = a.shape
         _,  _, To = u.shape
-        pos_pred  = pos
+        if self.use_grad:
+            pos_pred  = pos
+        else:
+            pos_pred  = pos[mask[..., 2].bool()].reshape(B, -1, 2)
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16])
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -424,10 +427,16 @@ class OFormerModule(ModuleTemplate):
         curriculum_steps = self.get_curriculum_steps()
         u         = u[..., :curriculum_steps]
         pred      = self.model(agent_aPos, agent_pos, pos_pred, curriculum_steps)
-        loss = self.criterion(
-            torch.masked_select(pred, mask_.bool()).view(B, -1),
-            torch.masked_select(u,    mask_.bool()).view(B, -1)
-        )
+        if self.use_grad:
+            loss = self.criterion(
+                torch.masked_select(pred, mask_.bool()).view(B, -1),
+                torch.masked_select(u,    mask_.bool()).view(B, -1)
+            )
+        else:
+            loss = self.criterion(
+                pred.                                   view(B, -1),
+                torch.masked_select(u,    mask_.bool()).view(B, -1)
+            )
         full_loss = loss
 
         # missing_rate = 0 available
