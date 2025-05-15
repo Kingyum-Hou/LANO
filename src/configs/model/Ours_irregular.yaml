@@ -1,24 +1,22 @@
-_target_: model_interface.OursModule
+_target_: model_interface_irregular.OursModule
 params_model:
-  name: Ours
-  input_size: 10
+  name: Ours_irregular
+  input_size: 2
   output_size: 1
   ntrain: ${datamodule.n_train_test[0]}
   ntest:  ${datamodule.n_train_test[1]}
   scale_factor: 2.
   space_size: ${datamodule.space_size}
-  ref: 8
-  hidden_size: 256
-  head_size: 32
+  ref: 0
+  hidden_size: 128
+  head_size: 16
   heads_num: 8
   kernel_layers: 8
-  feature_basis_num: 32
-  alpha: 1e-5
-  t: 10
+  feature_basis_num: 64
+  alpha: 1e-4
+  t: 
   downsample: ${datamodule.downsample}
   monitor: train/full_loss
-  surrogate_ratio: 5e-2
-  token_Mixer: Attention
 
 params_optim: ${optim}
 

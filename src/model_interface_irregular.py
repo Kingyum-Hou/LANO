@@ -8,7 +8,7 @@ from einops import rearrange
 
 from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, IPOTEncoder, IPOTProcessor, IPOTDecoder
 from models.FNO import FNO2d
-from models.Ours import OursModel
+from models.Ours_irregular import OursIrregularModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
@@ -19,24 +19,16 @@ import math
 
 
 def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[16, 16]):
-    if "task2" in task:
-        B, N, T = mask.shape
-        mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
-        num_observed = len(torch.nonzero(mask_patch[0, :, 0, 0, 0], as_tuple=False))
-        num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
-        for b in range(B):
-            true_indices = torch.nonzero(mask_patch[b, :, 0, 0, 0], as_tuple=False).squeeze(1)
-            indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]
-            mask_patch[b, indices_to_flip, :, :, :] = False
-        mask = reshape2data(mask_patch, patch_size=patch_size, patch_num=patch_num)
+    if "task0" in task:
+        mask = mask
     elif "task3" in task:
-        B, N, T = mask.shape
-        num_observed = len(torch.nonzero(mask[0, :, 0], as_tuple=False))
+        B, N = mask.shape
+        num_observed = len(torch.nonzero(mask[0, :], as_tuple=False))
         num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
         for b in range(B):
-            true_indices = torch.nonzero(mask[b, :, 0], as_tuple=False).squeeze(1) 
+            true_indices = torch.nonzero(mask[b, :], as_tuple=False) 
             indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]] 
-            mask[b, indices_to_flip, :] = False
+            mask[b, indices_to_flip] = False
     elif "task4" in task:
         B, N, T = mask.shape
         mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
@@ -139,10 +131,8 @@ def get_model(cfg):
             scale_factor=cfg.scale_factor,
             r=cfg.r_size,
         )
-    elif cfg.name == "Ours":
-        model = OursModel(cfg)
-    elif cfg.name == "Ours_2":
-        model = OursModel2(cfg)
+    elif cfg.name == "Ours_irregular":
+        model = OursIrregularModel(cfg)
     else:
         raise NotImplementedError
     return model
@@ -211,7 +201,6 @@ class ModuleTemplate(pl.LightningModule):
         self.curriculum_init  = params_optim.curriculum_init
         self.max_epochs       = params_optim.max_epochs
         self.epoch_iterations = 0.
-        self.T_output         = params_optim.T_all // 2
 
         self.use_grad         = params_optim.use_grad
 
@@ -305,7 +294,7 @@ class IPOTModule(ModuleTemplate):
         _, _,  To = yy.shape
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
+        agent_mask = random_false_shared(mask_.clone(), task)
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         pos_pred  = pos[0].clone()
@@ -431,7 +420,8 @@ class OFormerModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
+        agent_mask = random_false_shared(mask_.clone(), task)
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -515,16 +505,15 @@ class OursModule(ModuleTemplate):
         super().__init__(params_model, params_optim, params_scheduler)
         self.alpha = params_model.alpha
         self.t     = params_model.t
-        self.surrogate_ratio = params_model.surrogate_ratio
 
     def loss_surrogate(self, psi1, psi2):
-        psi1 = rearrange(psi1, 'b h f c -> (b h f) c')
-        psi2 = rearrange(psi2, 'b h f c -> (b h f) c')
+        psi1 = rearrange(psi1, 'b h f c -> b c (h f)')
+        psi2 = rearrange(psi2, 'b h f c -> b c (h f)')
         psi1 = psi1.div(psi1.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi2 = psi2.div(psi2.norm(dim=0).clamp(min=1e-6)) * math.sqrt(self.t)
         psi_K_psi_diag = (psi1 * psi2).sum(0)
-        psi2_d_K_psi1 = torch.einsum('bi, bj -> ij', psi2, psi1)
-        psi1_d_K_psi2 = torch.einsum('bi, bj -> ij', psi1, psi2)
+        psi2_d_K_psi1 = torch.einsum('bci, bcj -> cij', psi2, psi1)
+        psi1_d_K_psi2 = torch.einsum('bci, bcj -> cij', psi1, psi2)
         loss = - psi_K_psi_diag.sum() * 2
         reg  = (psi2_d_K_psi1 ** 2).triu(1).sum() + \
                (psi1_d_K_psi2 ** 2).triu(1).sum()
@@ -534,52 +523,26 @@ class OursModule(ModuleTemplate):
         return loss
     
     def step(self, batch: Any):
-        mask, pos, xx, yy, pos_ref, task = batch
-        B, HW,Ti = xx.shape
-        _, _, To = yy.shape
+        mask, pos, xy, task = batch
+        B, N = xy.shape
 
         # agent mission
-        mask_      = mask[..., 0].unsqueeze(dim=-1)
-        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
-        #agent_mask = random_false_shared(mask_.clone(), task) 
-        #agent_mask = mask_.clone()  # no agent mission
-        pred_trajectory = []
-        loss = 0.
-
-        curriculum_steps = self.get_curriculum_steps()
-        yy = yy[..., :curriculum_steps]
-        for t in range(0, curriculum_steps):
-            y     = yy[..., t:t+1]
-            pred  = self.model(pos_ref, xx, agent_mask)
-            loss += self.criterion(
-                torch.masked_select(pred, mask_.bool()).view(B, -1), 
-                torch.masked_select(y,    mask_.bool()).view(B, -1)
-            )
-            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            loss += self.surrogate_ratio * self.loss_surrogate(psi1, psi2)
-            pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], y], dim=-1)
-        pred = torch.cat(pred_trajectory, dim=-1)
-        full_loss = self.criterion(
-            torch.masked_select(pred, mask_.bool()).view(B, -1), 
-            torch.masked_select(yy,   mask_.bool()).view(B, -1)
-        )
+        agent_mask = random_false_shared(mask.clone(), task) 
+        pred  = self.model(pos, None, agent_mask)
+        pred  = pred.squeeze(-1)
+        loss = self.criterion(pred, xy)
+        full_loss = loss
+        
+        #psi1, psi2 = self.model.get_psi(pos, agent_mask, mask_)
+        #loss += 5e-2 * self.loss_surrogate(psi1, psi2)
         #check_model_parameters_isnan(self.model)
         return full_loss, loss
     
     def rollout(self, batch: Any):
-        mask, pos, xx, yy, pos_ref, task = batch
-        B, HW, Ti = xx.shape
-        _,  _, To = yy.shape
+        mask, pos, xy, task = batch
+        B, N = xy.shape
 
-        pred_trajectory = []
-        for t in range(0, To):
-            y    = yy[..., t:t+1]
-            pred = self.model(pos_ref, xx, mask[..., :1])
-            pred_trajectory.append(pred)
-            xx = torch.cat([xx[..., 1:], pred], dim=-1)
-        pred = torch.cat(pred_trajectory, dim=-1)
-        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        pred = self.model(pos, None, mask)
+        pred = pred.squeeze(-1)
+        full_loss = self.criterion(pred, xy)
         return full_loss
-

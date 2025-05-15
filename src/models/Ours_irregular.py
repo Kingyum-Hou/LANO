@@ -5,6 +5,8 @@ from einops import rearrange, repeat
 from timm.layers import trunc_normal_
 import math
 from xformers.ops import memory_efficient_attention
+from torch_scatter import scatter_add
+from torch_cluster import knn_graph
 
 
 ACTIVATION = {'gelu':nn.GELU(),'tanh':nn.Tanh(),'sigmoid':nn.Sigmoid(),'relu':nn.ReLU(),'leaky_relu':nn.LeakyReLU(0.1),'softplus':nn.Softplus(),'ELU':nn.ELU()}
@@ -65,48 +67,65 @@ def weights_init(init_type='gaussian'):
         return init_fun
 
 
-class PartialConv(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, dilation=1, groups=1, bias=True):
+class PartialPointConv2D(nn.Module):
+    """
+        core layer
+    """
+    def __init__(self, in_channels, out_channels, bias=True):
         super().__init__()
-        self.input_conv = nn.Conv2d(in_channels, out_channels, kernel_size,
-                                    stride, padding, dilation, groups, bias)
-        self.mask_conv = nn.Conv2d(in_channels, out_channels, kernel_size,
-                                   stride, padding, dilation, groups, False)
-        self.input_conv.apply(weights_init('kaiming'))
+        self.lin = nn.Linear(in_channels, out_channels, bias=bias)
+        nn.init.kaiming_normal_(self.lin.weight, nonlinearity='relu')
 
-        torch.nn.init.constant_(self.mask_conv.weight, 1.0)
+    def forward(self, x, edge_index, mask):
+        N = x.size(0)
+        x_masked = x * mask                    # (N, C_in)
+        feat = self.lin(x_masked)              # (N, C_out)
 
-        # mask is not updated
-        for param in self.mask_conv.parameters():
-            param.requires_grad = False
+        row, col = edge_index
+        out      = scatter_add(feat[col], row, dim=0, dim_size=N)
+        mask_sum = scatter_add(mask[col], row, dim=0, dim_size=N)
 
-    def forward(self, input, mask):
-        # http://masc.cs.gmu.edu/wiki/partialconv
-        # C(X) = W^T * X + b, C(0) = b, D(M) = 1 * M + 0 = sum(M)
-        # W^T* (M .* X) / sum(M) + b = [C(M .* X) – C(0)] / D(M) + C(0)
+        bias      = (self.lin.bias if self.lin.bias is not None
+                     else torch.zeros(out.size(1), device=x.device)).view(1, -1)
+        no_update = mask_sum == 0
+        mask_sum  = mask_sum.masked_fill_(no_update, 1.)
 
-        output = self.input_conv(input * mask)
-        if self.input_conv.bias is not None:
-            output_bias = self.input_conv.bias.view(1, -1, 1, 1).expand_as(
-                output)
-        else:
-            output_bias = torch.zeros_like(output)
+        out = (out - bias) / mask_sum + bias
+        out = out.masked_fill_(no_update, 0.)
 
-        with torch.no_grad():
-            output_mask = self.mask_conv(mask)
+        new_mask = (~no_update).float()
+        return out, new_mask
 
-        no_update_holes = output_mask == 0
-        mask_sum = output_mask.masked_fill_(no_update_holes, 1.0)
 
-        output_pre = (output - output_bias) / mask_sum + output_bias
-        output = output_pre.masked_fill_(no_update_holes, 0.0)
+class BatchedDistanceMaskedPointConv2D(nn.Module):
+    def __init__(self, in_channels, out_channels, k=9, radius=0.05, bias=True):
+        super().__init__()
+        self.k = k
+        self.radius = radius
+        self.core = PartialPointConv2D(in_channels, out_channels, bias=bias)
 
-        new_mask = torch.ones_like(output)
-        new_mask = new_mask.masked_fill_(no_update_holes, 0.0)
+    @torch.no_grad()
+    def _build_edge_index(self, pos_flat, batch_vec):
+        ei = knn_graph(pos_flat, k=self.k, batch=batch_vec, loop=True)
 
-        return output, new_mask
-    
+        row, col = ei
+        dist2 = ((pos_flat[row] - pos_flat[col]).pow(2)).sum(-1)
+        mask_edges = dist2 < (self.radius ** 2)
+        return ei[:, mask_edges]
+
+    def forward(self, x, pos, mask):
+        B, N, _ = x.shape
+        x_f    = x.reshape(-1, x.size(-1))       # (B*N, C_in)
+        pos_f  = pos.reshape(-1, 2)              # (B*N, 2)
+        mask_f = mask.reshape(-1, 1)             # (B*N, 1)
+        batch_vec = torch.arange(B, device=x.device).repeat_interleave(N)
+
+        ei = self._build_edge_index(pos_f, batch_vec)
+        out_f, new_mask_f = self.core(x_f, ei, mask_f)
+        out      = out_f.reshape(B, N, -1)
+        new_mask = new_mask_f.reshape(B, N, 1)
+        return out, new_mask
+
 
 class RotaryEmbedding(nn.Module):
     """
@@ -173,99 +192,84 @@ class ApplyRotaryEmbedding():
 
 
 class Temperature(nn.Module):
-    def __init__(self, heads_num, temperature=0.5):
+    def __init__(self, feature_basis_num, temperature=0.5):
         super().__init__()
-        self.temperature = nn.Parameter(torch.ones([1, heads_num, 1, 1]) * temperature)
+        self.temperature = nn.Parameter(torch.ones([1, 1, feature_basis_num]) * temperature)
 
     def forward(self, x):
         return x / self.temperature
 
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size, token_Mixer='Attention'):
+    def __init__(self, hidden_size, feature_basis_num, heads_num):
         super().__init__()
         head_size = hidden_size // heads_num
-        self.token_Mixer = token_Mixer
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
+        self.ln_3 = nn.LayerNorm(hidden_size)
+        self.ln_4 = nn.LayerNorm(hidden_size)
         self.feature_basis_projector = nn.Sequential(
-            MLP(head_size, head_size, feature_basis_num, n_layers=0, act='gelu', res=False),
-            Temperature(heads_num, temperature=0.5),
+            MLP(hidden_size, hidden_size, feature_basis_num, n_layers=0, act='gelu', res=False),
+            Temperature(feature_basis_num, temperature=0.5),
             nn.Softmax(dim=-1),
         )
-        if token_Mixer == 'Attention':
-            self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
-        if token_Mixer == 'MLP':
-            #self.conjugate = MLP(head_size, hidden_size, head_size, n_layers=0, act='gelu')
-            self.conjugate = MLP(feature_basis_num, feature_basis_num*2, feature_basis_num, n_layers=0, act='gelu')
+        self.to_qkv = nn.Linear(hidden_size, hidden_size*3, bias=False)
+        self.attn_mlp = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        #self.conjugate = MLP(head_size, hidden_size, head_size, n_layers=0, act='gelu')
         self.to_out = nn.Linear(hidden_size, hidden_size)
-        self.conv = PartialConv(heads_num*feature_basis_num, heads_num*feature_basis_num, 3, padding=1)
-        self.last_mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        self.conv = BatchedDistanceMaskedPointConv2D(feature_basis_num, feature_basis_num, k=9, radius=0.04)
         self.feature_basis_num = feature_basis_num
         self.heads_num = heads_num
         self.head_size = head_size
-        self.space_size = space_size
+        self.hidden_size = hidden_size
 
     def compute_feature_map(self, x, no_valid):
-        x = rearrange(x, 'b n (h c) -> b h n c', c=self.head_size, h=self.heads_num)
         feature_basis = self.feature_basis_projector(x)
-        psi = torch.einsum("b h n c, b h n f -> b h f c", x, feature_basis).contiguous()
-        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        psi = torch.einsum("b n c, b n f -> b f c", x, feature_basis).contiguous()
         feature_basis = feature_basis.masked_fill(no_valid, 0.)
-        feature_basis_norm = feature_basis.sum(dim=2)
-        psi = psi / (feature_basis_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
+        feature_basis_norm = feature_basis.sum(dim=1)
+        psi = psi / (feature_basis_norm + 1e-6)[:, :, None].repeat(1, 1, self.hidden_size)
         return psi, feature_basis
 
-    def map_back_to_originalSpace(self, feature_basis, mask, psi):
-        H = self.space_size[0]
-        W = self.space_size[1]
-        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=H, W=W)
-        mask_new          = rearrange(mask,          'b (H W) 1   -> b 1 H W', H=H, W=W) 
-        mask_new = mask_new.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
-        feature_basis_new, mask_new = self.conv(feature_basis_new, mask_new)
-        feature_basis_new = rearrange(feature_basis_new, 'b (h F) H W -> b h (H W) F', h=self.heads_num, F=self.feature_basis_num)
-        mask_new          = rearrange(mask_new, 'b c H W -> b (H W) c')[..., :1]
-        x = torch.einsum("b h f c, b h n f -> b h n c", psi, feature_basis_new)
-        x = rearrange(x, 'b h n c -> b n (h c)')
+    def map_back_to_originalSpace(self, feature_basis, pos, mask, psi):
+        mask_new          = mask [:, :, None]
+        feature_basis_new, mask_new = self.conv(feature_basis, pos, mask_new)
+        x = torch.einsum("b f c, b n f -> b n c", psi, feature_basis_new)
+        mask_new = mask_new.squeeze(-1)
         return x, mask_new
 
     def get_psi(self, x, mask):
-        no_valid = mask == 0
+        no_valid = (mask == 0)[:, :, None]
         x = x.masked_fill(no_valid, 0.)
         
         # compute feature map
         psi, _ = self.compute_feature_map(self.ln_1(x), no_valid)
         return psi
 
-    def forward(self, x, mask):
-        no_valid = mask == 0
+    def forward(self, x, pos, mask):
+        no_valid = (mask == 0)[:, :, None]
         x = x.masked_fill(no_valid, 0.)
         
         # compute feature map
         psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
 
         # conjugate operator
-        if self.token_Mixer == 'Attention':
-            psi = rearrange(psi, 'b h f c -> b f h c')
-            query, key, value = self.to_qkv(psi).chunk(3, dim = -1)
-            psi = memory_efficient_attention(query, key, value)
-            psi = rearrange(psi, 'b f h c -> b h f c')
-        elif self.token_Mixer == 'MLP':
-            psi = psi.permute(0, 1, 3, 2)
-            psi = self.conjugate(psi)
-            psi = psi.permute(0, 1, 3, 2)
-        
-        # map back to original space
-        x_new, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
-        x_new = self.to_out(x_new)
+        query, key, value = self.to_qkv(psi).chunk(3, dim = -1)
+        query = rearrange(query, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        key   = rearrange(key,   'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        value = rearrange(value, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        attn_out = memory_efficient_attention(query, key, value)
+        attn_out = rearrange(attn_out, 'b f h c -> b f (h c)')
+        psi = psi + attn_out
+        psi = psi + self.attn_mlp(self.ln_3(psi))
 
-        # mlp
-        x = x + x_new
-        x = self.last_mlp(self.ln_2(x)) + x
+        # map back to original space
+        x_new, mask_new = self.map_back_to_originalSpace(feature_basis, pos, mask, psi)
+        x = x + self.to_out(x_new)
         return x, mask_new
 
 
-class OursModel(nn.Module):
+class OursIrregularModel(nn.Module):
     def __init__(self, args):
         super().__init__()
 
@@ -275,16 +279,12 @@ class OursModel(nn.Module):
             n_layers=0, act='gelu', res=False
         )
         self.kernelProcessor = []
-        h = int((args.space_size[0] / args.downsample))
-        w = int((args.space_size[1] / args.downsample))
         for _ in range(args.kernel_layers):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
                     args.feature_basis_num, 
                     args.heads_num,
-                    space_size=[h, w],
-                    token_Mixer=args.token_Mixer
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)
@@ -293,6 +293,7 @@ class OursModel(nn.Module):
             nn.Linear(args.hidden_size, args.output_size)
         )
         self.initialize_weights()
+        self.placeholder = nn.Parameter((1 / (args.hidden_size)) * torch.rand(args.hidden_size, dtype=torch.float))
 
     def initialize_weights(self):
         self.apply(self._init_weights)
@@ -316,13 +317,15 @@ class OursModel(nn.Module):
         return psi1, psi2
 
     def forward(self, pos, x, mask):
-        if pos.dim()>3:
-            pos = rearrange(pos, 'b ... c -> b (...) c')
-        z = torch.concat([pos, x], dim=-1)
+        if x is not None:
+            z = torch.concat([pos, x], dim=-1)
+        else:
+            z = pos
         z = self.featureExpander(z)
+        z = z + self.placeholder[None, None, :]
 
         for _, block in enumerate(self.kernelProcessor):
-            z, mask = block(z, mask)
+            z, mask = block(z, pos, mask)
     
         y  = self.projector(z)
         return y

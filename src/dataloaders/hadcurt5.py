@@ -36,29 +36,31 @@ def add_patch_missing(data, missing_rate, space_size, patch_size=4):
     return valid_data, valid_mask
 
 
-def get_ERA5(
-        name, data_dir, data_mask_dir, num_train, num_test, space_size,
+def get_HADCRUT5(
+        name, data_dir, data_dir_mask, num_train, num_test, space_size,
         task, T_all, missing_rate, ref, downsample
     ):
     H, W = space_size[0], space_size[1]
+    T = T_all//2
     # load_data
-    #ds = xr.open_dataset(data_dir)
-    #data = torch.tensor(np.array(ds["t"]))
+    ds = xr.open_dataset(data_dir)
+    data = torch.tensor(np.array(ds["tas"]))
     h = int((H / downsample))
     w = int((W / downsample))
-    #Tn = 7 * int(data.shape[0] / 7)
-    #data = data[:, :720, :]
-    #data = data[:, ::downsample, ::downsample]
-    #data_list = []
-    #for i in range(0, data.shape[0]-14, 7):
-    #    data_list.append(data[i:i+14, ...])
-    #data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1)
-    data = torch.from_numpy(np.load(data_dir))
+    data = data[:, ::downsample, ::downsample]
+    data_list = []
+    for i in range(0, data.shape[0]-T_all, T):
+        data_list.append(data[i:i+T_all, ...])
+    data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1).float()
+    mask = ~torch.isnan(data)
+    data = torch.nan_to_num(data, nan=0.0)
 
     # train & test
-    train_xy = data[:num_train, ...].reshape(num_train, -1, 14)
-    test_xy  = data[-num_test:, ...].reshape(num_test,  -1, 14)
-    
+    train_xy = data[:num_train, ...].reshape(num_train, -1, T_all)
+    test_xy  = data[-num_test:, ...].reshape(num_test,  -1, T_all)
+    train_mask = mask[:num_train, ...].reshape(num_train, -1, T_all).float()
+    test_mask  = mask[-num_test:, ...].reshape(num_test,  -1, T_all).float()
+
     pos = get_pos(h, w).unsqueeze(0).contiguous()
     train_pos = pos.repeat(num_train, 1, 1, 1).reshape(num_train, -1, 2)
     test_pos  = pos.repeat(num_test,  1, 1, 1).reshape(num_test, -1, 2)
@@ -75,50 +77,60 @@ def get_ERA5(
         missing_rate_high = 0.75
     else:
         missing_rate_high = min(0.75, missing_rate*2)
-
     if task == "task2":
-        ds = xr.open_dataset(data_mask_dir) 
+        ds = xr.open_dataset(data_dir_mask)
         temp = torch.tensor(ds["tas"].values)
         mask = ~torch.isnan(temp)
-        B = mask.shape[0]
-        mask = mask[B-num_train-num_test:, ...].float()
-        train_mask = mask[:num_train, :, :].reshape(num_train, -1, 1).repeat(1, 1, 14)
-        test_mask  = mask[:num_test,  :, :].reshape(num_test,  -1, 1).repeat(1, 1, 14)
+        h = int((H / downsample))
+        w = int((W / downsample))
+        mask = mask[:, ::downsample, ::downsample]
+        mask_list = []
+        for i in range(0, mask.shape[0]-T_all, T):
+            mask_list.append(mask[i:i+T_all, ...])
+        mask = torch.stack(mask_list, dim=0).permute(0, 2, 3, 1).float()
+        train_mask_real = mask[200:num_train, :, :, 0].reshape(num_train-200, -1, 1)
+        test_mask_real  = mask[-num_test:, :, :, 0].   reshape(num_test,      -1, 1)
+        train_mask_real = train_mask_real.repeat(1, 1, T_all)
+        test_mask_real  = test_mask_real.repeat(1,  1, T_all)
         # train
-        train_x = train_xy[...,  :7] * train_mask[...,  :7]
-        train_y = train_xy[..., 7: ] * train_mask[..., 7: ]
+        train_xy[200:num_train] = train_xy[200:num_train] * train_mask_real
+        train_x    = train_xy[...,  :T]
+        train_y    = train_xy[..., T: ]
+        train_mask[200:num_train] = train_mask_real*train_mask[200:num_train]
         # test
-        test_x  = test_xy[...,  :7] * test_mask[...,  :7]
-        test_y  = test_xy[..., 7: ]
-        # test high
+        test_xy_  = test_xy * test_mask_real
+        test_x    = test_xy_[...,  :T]
+        test_y    = test_xy [..., T: ]
+        test_mask = test_mask_real * test_mask
+        # test high NONE
+        test_x_high    = test_x
         test_mask_high = test_mask
-        test_x_high = test_x
     elif task == "task3":
         num_sampling      = int(np.round(missing_rate      * h * w))
         num_sampling_high = int(np.round(missing_rate_high * h * w))
         # train
         train_xy, train_mask = add_point_missing(train_xy, num_sampling)
-        train_x = train_xy[...,  :7]
-        train_y = train_xy[..., 7: ]
+        train_x = train_xy[...,  :T]
+        train_y = train_xy[..., T: ]
         # test
         test_xy_, test_mask = add_point_missing(test_xy, num_sampling)
-        test_x  = test_xy_[...,  :7]
-        test_y  = test_xy [..., 7: ]
+        test_x  = test_xy_[...,  :T]
+        test_y  = test_xy [..., T: ]
         # test high
         test_xy_high_, test_mask_high = add_point_missing(test_xy, num_sampling_high)
-        test_x_high = test_xy_high_[...,  :7]
+        test_x_high = test_xy_high_[...,  :T]
     elif task == "task4":
         # train
         train_xy, train_mask = add_patch_missing(train_xy, missing_rate, (h, w), patch_size=3)
-        train_x = train_xy[...,  :7]
-        train_y = train_xy[..., 7: ]
+        train_x = train_xy[...,  :T]
+        train_y = train_xy[..., T: ]
         # test
         test_xy_, test_mask = add_patch_missing(test_xy, missing_rate, (h, w), patch_size=3)
-        test_x = test_xy_[...,  :7]
-        test_y = test_xy [..., 7: ]
+        test_x = test_xy_[...,  :T]
+        test_y = test_xy [..., T: ]
         # test high
         test_xy_high_, test_mask_high = add_patch_missing(test_xy, missing_rate_high, (h, w), patch_size=3)
-        test_x_high = test_xy_high_[...,  :7]
+        test_x_high = test_xy_high_[...,  :T]
     else:
         raise NotImplementedError
     return (train_mask, train_pos, train_x, train_y, train_pos_ref), \
@@ -126,7 +138,7 @@ def get_ERA5(
            (test_mask_high, test_x_high)
 
 
-class ERA5Dataset(Dataset):
+class HADCRUT5Dataset(Dataset):
     def __init__(self, mask, pos, x, y, pos_ref, task):
         self.mask = mask
         self.pos  = pos
@@ -147,7 +159,7 @@ class ERA5Dataset(Dataset):
         return mask, pos, x, y, pos_ref, self.task
 
 
-class ERA5Dataset4test(Dataset):
+class HADCRUT5Dataset4test(Dataset):
     def __init__(self, test_data, test_data_high, task):
         self.mask     = test_data[0]
         self.pos      = test_data[1]

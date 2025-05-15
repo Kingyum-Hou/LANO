@@ -173,60 +173,56 @@ class ApplyRotaryEmbedding():
 
 
 class Temperature(nn.Module):
-    def __init__(self, heads_num, temperature=0.5):
+    def __init__(self, feature_basis_num, temperature=0.5):
         super().__init__()
-        self.temperature = nn.Parameter(torch.ones([1, heads_num, 1, 1]) * temperature)
+        self.temperature = nn.Parameter(torch.ones([1, 1, feature_basis_num]) * temperature)
 
     def forward(self, x):
         return x / self.temperature
 
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size, token_Mixer='Attention'):
+    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size):
         super().__init__()
         head_size = hidden_size // heads_num
-        self.token_Mixer = token_Mixer
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
+        self.ln_3 = nn.LayerNorm(hidden_size)
+        self.ln_4 = nn.LayerNorm(hidden_size)
         self.feature_basis_projector = nn.Sequential(
-            MLP(head_size, head_size, feature_basis_num, n_layers=0, act='gelu', res=False),
-            Temperature(heads_num, temperature=0.5),
+            MLP(hidden_size, hidden_size, feature_basis_num, n_layers=0, act='gelu', res=False),
+            Temperature(feature_basis_num, temperature=0.5),
             nn.Softmax(dim=-1),
         )
-        if token_Mixer == 'Attention':
-            self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
-        if token_Mixer == 'MLP':
-            #self.conjugate = MLP(head_size, hidden_size, head_size, n_layers=0, act='gelu')
-            self.conjugate = MLP(feature_basis_num, feature_basis_num*2, feature_basis_num, n_layers=0, act='gelu')
+        self.to_qkv = nn.Linear(hidden_size, hidden_size*3, bias=False)
+        self.attn_mlp = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        #self.conjugate = MLP(feature_basis_num, feature_basis_num*2, feature_basis_num, n_layers=0, act='gelu')
         self.to_out = nn.Linear(hidden_size, hidden_size)
-        self.conv = PartialConv(heads_num*feature_basis_num, heads_num*feature_basis_num, 3, padding=1)
-        self.last_mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        self.conv = PartialConv(feature_basis_num, feature_basis_num, 3, padding=1)
         self.feature_basis_num = feature_basis_num
         self.heads_num = heads_num
         self.head_size = head_size
+        self.hidden_size = hidden_size
         self.space_size = space_size
 
     def compute_feature_map(self, x, no_valid):
-        x = rearrange(x, 'b n (h c) -> b h n c', c=self.head_size, h=self.heads_num)
         feature_basis = self.feature_basis_projector(x)
-        psi = torch.einsum("b h n c, b h n f -> b h f c", x, feature_basis).contiguous()
-        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        psi = torch.einsum("b n c, b n f -> b f c", x, feature_basis).contiguous()
         feature_basis = feature_basis.masked_fill(no_valid, 0.)
-        feature_basis_norm = feature_basis.sum(dim=2)
-        psi = psi / (feature_basis_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
+        feature_basis_norm = feature_basis.sum(dim=1)
+        psi = psi / (feature_basis_norm + 1e-6)[:, :, None].repeat(1, 1, self.hidden_size)
         return psi, feature_basis
 
     def map_back_to_originalSpace(self, feature_basis, mask, psi):
         H = self.space_size[0]
         W = self.space_size[1]
-        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=H, W=W)
+        feature_basis_new = rearrange(feature_basis, 'b (H W) F -> b F H W', H=H, W=W)
         mask_new          = rearrange(mask,          'b (H W) 1   -> b 1 H W', H=H, W=W) 
-        mask_new = mask_new.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
+        mask_new = mask_new.repeat(1, self.feature_basis_num, 1, 1)
         feature_basis_new, mask_new = self.conv(feature_basis_new, mask_new)
-        feature_basis_new = rearrange(feature_basis_new, 'b (h F) H W -> b h (H W) F', h=self.heads_num, F=self.feature_basis_num)
+        feature_basis_new = rearrange(feature_basis_new, 'b F H W -> b (H W) F', F=self.feature_basis_num)
         mask_new          = rearrange(mask_new, 'b c H W -> b (H W) c')[..., :1]
-        x = torch.einsum("b h f c, b h n f -> b h n c", psi, feature_basis_new)
-        x = rearrange(x, 'b h n c -> b n (h c)')
+        x = torch.einsum("b f c, b n f -> b n c", psi, feature_basis_new)
         return x, mask_new
 
     def get_psi(self, x, mask):
@@ -245,23 +241,22 @@ class KernelIntegrator(nn.Module):
         psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
 
         # conjugate operator
-        if self.token_Mixer == 'Attention':
-            psi = rearrange(psi, 'b h f c -> b f h c')
-            query, key, value = self.to_qkv(psi).chunk(3, dim = -1)
-            psi = memory_efficient_attention(query, key, value)
-            psi = rearrange(psi, 'b f h c -> b h f c')
-        elif self.token_Mixer == 'MLP':
-            psi = psi.permute(0, 1, 3, 2)
-            psi = self.conjugate(psi)
-            psi = psi.permute(0, 1, 3, 2)
-        
+        query, key, value = self.to_qkv(self.ln_2(psi)).chunk(3, dim = -1)
+        query = rearrange(query, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        key   = rearrange(key,   'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        value = rearrange(value, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
+        attn_out = memory_efficient_attention(query, key, value)
+        attn_out = rearrange(attn_out, 'b f h c -> b f (h c)')
+        psi = psi + attn_out
+        psi = psi + self.attn_mlp(self.ln_3(psi))
+        """
+        psi = psi.permute(0, 1, 3, 2)
+        psi = self.conjugate(psi)
+        psi = psi.permute(0, 1, 3, 2)
+        """
         # map back to original space
         x_new, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
-        x_new = self.to_out(x_new)
-
-        # mlp
-        x = x + x_new
-        x = self.last_mlp(self.ln_2(x)) + x
+        x = x + self.to_out(x_new)
         return x, mask_new
 
 
@@ -284,7 +279,6 @@ class OursModel(nn.Module):
                     args.feature_basis_num, 
                     args.heads_num,
                     space_size=[h, w],
-                    token_Mixer=args.token_Mixer
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)

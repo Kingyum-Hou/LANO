@@ -1,6 +1,7 @@
 _target_:     dataloaders.data_interface.ERA5_DataModule
 name:         ERA5
-data_dir:     /data/jingren/repository/dataset/WeatherBench/era5_temperature.grib
+data_dir:     /root/data/era5/era5_task2.npy
+data_mask_dir: /root/data/hadcurt5/HadCRUT.5.0.2.0.anomalies.1.nc
 task:         task3
 missing_rate: 0.5
 n_train_test: [300, 50] # sst shape   (366, 901, 1001)

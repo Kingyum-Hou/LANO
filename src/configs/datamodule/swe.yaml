@@ -1,6 +1,6 @@
 _target_:     dataloaders.data_interface.SWE_DataModule
 name:         SWE
-data_dir:     /data/jingren/repository/dataset/PDEBench/2D/shallow-water/2D_rdb_NA_NA.h5
+data_dir:     /root/data/2D_rdb_NA_NA.h5
 task:         task3
 missing_rate: 0.5
 n_train_test: [500, 100]
