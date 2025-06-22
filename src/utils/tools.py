@@ -358,3 +358,124 @@ def reshape2data(x, patch_size, patch_num):
                 PN2=patch_num[1],
             )
     return x
+
+
+class UnitTransformer():
+    def __init__(self, X):
+        self.mean = X.mean(dim=(0, 1), keepdim=True)
+        self.std = X.std(dim=(0, 1), keepdim=True) + 1e-8
+
+    def to(self, device):
+        self.mean = self.mean.to(device)
+        self.std = self.std.to(device)
+        return self
+
+    def cuda(self):
+        self.mean = self.mean.cuda()
+        self.std = self.std.cuda()
+
+    def cpu(self):
+        self.mean = self.mean.cpu()
+        self.std = self.std.cpu()
+
+    def encode(self, x):
+        x = (x - self.mean) / (self.std)
+        return x
+
+    def decode(self, x):
+        return x * self.std + self.mean
+
+    def transform(self, X, inverse=True, component='all'):
+        if component == 'all' or 'all-reduce':
+            if inverse:
+                orig_shape = X.shape
+                return (X * (self.std - 1e-8) + self.mean).view(orig_shape)
+            else:
+                return (X - self.mean) / self.std
+        else:
+            if inverse:
+                orig_shape = X.shape
+                return (X * (self.std[:, component] - 1e-8) + self.mean[:, component]).view(orig_shape)
+            else:
+                return (X - self.mean[:, component]) / self.std[:, component]
+
+
+def masked_loss_average(pred, target, mask, criterion):
+    B = pred.size(0)
+    loss = 0.0
+    valid_count = 0
+
+    for i in range(B):
+        pi = pred[i][mask[i]]
+        yi = target[i][mask[i]]
+
+        if pi.numel() > 0:
+            loss += criterion(pi, yi)
+            valid_count += 1
+
+    if valid_count == 0:
+        return torch.tensor(0.0, device=pred.device, requires_grad=True)
+    
+    return loss / valid_count
+
+
+def add_point_missing(data, num_sampling:int)-> tuple:
+    """
+    Randomly masks a specified number of points in the input data tensor by setting their values to zero.
+
+    Args:
+        data (torch.Tensor): Input tensor of shape (B, HW, T), where B is the batch size, HW is the number of points, and T is the number of features per point.
+        num_sampling (int): Number of points to randomly mask (set to zero) for each sample in the batch.
+
+    Returns:
+        tuple: A tuple containing:
+            - valid_data (torch.Tensor): Tensor with the same shape as input, where randomly selected points are set to zero.
+            - valid_mask (torch.Tensor): Binary mask tensor of the same shape as input, where masked points are set to zero and others are one.
+
+    Note:
+        The masking is performed independently for each sample in the batch.
+    """
+    B, HW, T   = data.shape
+
+    valid_data = data.clone()
+    valid_mask = torch.ones_like(valid_data)
+    for i in range(B):
+        indices_addMissing = torch.randperm(HW)[:num_sampling]
+        valid_data[i, indices_addMissing, ...] = 0.
+        valid_mask[i, indices_addMissing, ...] = 0.
+    return valid_data, valid_mask
+
+
+def add_patch_missing(data:torch.Tensor, missing_rate:float, space_size:list, patch_size:int=4)-> tuple:
+    """
+    Randomly masks patches in the input tensor to simulate missing data.
+    
+    Args:
+        data (torch.Tensor): Input tensor of shape (B, HW, T) where B is batch size.
+        missing_rate (float): Fraction of patches to be masked (set to zero).
+        space_size (list): Spatial dimensions of the input data, typically [H, W].
+        patch_size (int, optional): Size of each square patch. Default is 4.
+
+    Returns:
+        tuple:
+            - valid_data (torch.Tensor): Tensor with randomly masked patches set to zero, same shape as input.
+            - valid_mask (torch.Tensor): Binary mask tensor of the same shape as input, where 1 indicates valid (unmasked) data and 0 indicates masked (missing) patches.
+    
+    Note:
+        The masking is performed independently for each sample in the batch.
+    """
+    patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
+    total_patches = np.prod(patch_num)
+    patch_holes_num = int(np.round(total_patches * missing_rate))
+    B = data.shape[0]
+
+    valid_data = reshape2blocks(data, patch_size, patch_num)
+    valid_mask = torch.ones_like(valid_data)
+    for i in range(B):
+        indices_addHoles = torch.randperm(total_patches)[:patch_holes_num]
+        valid_data[i, indices_addHoles, ...] = 0.
+        valid_mask[i, indices_addHoles, ...] = 0.
+    
+    valid_data = reshape2data(valid_data, patch_size, patch_num)
+    valid_mask = reshape2data(valid_mask, patch_size, patch_num)
+    return valid_data, valid_mask

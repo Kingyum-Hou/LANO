@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import reshape2blocks, reshape2data
+from tools import UnitTransformer, reshape2blocks, reshape2data
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
@@ -43,8 +43,8 @@ def get_ELAS(
         space_dim, task, missing_rate
     ):
     # load data
-    PATH_Sigma = data_dir + '/Random_UnitCell_sigma_10.npy'
-    PATH_XY    = data_dir + '/Random_UnitCell_XY_10.npy'
+    PATH_Sigma = data_dir + '/Meshes/Random_UnitCell_sigma_10.npy'
+    PATH_XY    = data_dir + '/Meshes/Random_UnitCell_XY_10.npy'
     s = np.load(PATH_Sigma)
     s = torch.tensor(s, dtype=torch.float).permute(1, 0)
     pos = np.load(PATH_XY)

@@ -9,10 +9,11 @@ from einops import rearrange
 from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, IPOTEncoder, IPOTProcessor, IPOTDecoder
 from models.FNO import FNO2d
 from models.Ours import OursModel
+from models.Ours_irregular import OursIrregularModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
-from tools import LpLoss, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
+from tools import LpLoss, masked_loss_average, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
 import math
@@ -141,8 +142,8 @@ def get_model(cfg):
         )
     elif cfg.name == "Ours":
         model = OursModel(cfg)
-    elif cfg.name == "Ours_2":
-        model = OursModel2(cfg)
+    elif cfg.name == "Ours_irregular":
+        model = OursIrregularModel(cfg)
     else:
         raise NotImplementedError
     return model
@@ -305,7 +306,8 @@ class IPOTModule(ModuleTemplate):
         _, _,  To = yy.shape
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
+        #agent_mask = random_false_shared(mask_.clone(), task)
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # NS patch-wise
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         pos_pred  = pos[0].clone()
@@ -431,7 +433,8 @@ class OFormerModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60])
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36])
+        #agent_mask = random_false_shared(mask_.clone(), task)
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)

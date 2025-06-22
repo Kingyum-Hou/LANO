@@ -2,39 +2,11 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import get_pos, get_pos_ref, reshape2blocks, reshape2data
+from tools import get_pos, get_pos_ref, add_patch_missing, add_point_missing
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
 
-
-def add_point_missing(data, num_sampling):
-    B, HW, T   = data.shape
-
-    valid_data = data.clone()
-    valid_mask = torch.ones_like(valid_data)
-    for i in range(B):
-        indices_addMissing = torch.randperm(HW)[:num_sampling]
-        valid_data[i, indices_addMissing, ...] = 0.
-        valid_mask[i, indices_addMissing, ...] = 0.
-    return valid_data, valid_mask
-
-def add_patch_missing(data, missing_rate, space_size, patch_size=4):
-    patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
-    total_patches = np.prod(patch_num)
-    patch_holes_num = int(np.round(total_patches * missing_rate))
-    B = data.shape[0]
-
-    valid_data = reshape2blocks(data, patch_size, patch_num)
-    valid_mask = torch.ones_like(valid_data)
-    for i in range(B):
-        indices_addHoles = torch.randperm(total_patches)[:patch_holes_num]
-        valid_data[i, indices_addHoles, ...] = 0.
-        valid_mask[i, indices_addHoles, ...] = 0.
-    
-    valid_data = reshape2data(valid_data, patch_size, patch_num)
-    valid_mask = reshape2data(valid_mask, patch_size, patch_num)
-    return valid_data, valid_mask
 
 def pad_periodic(data, padding):
     # padding H
@@ -81,7 +53,7 @@ def cubicInterp(data, mask):
 
 
 def get_NS(
-        name, data_dir, num_train, num_test, space_size,
+        name, data_dir, data_mask_dir, num_train, num_test, space_size,
         task, T_all, missing_rate, ref
     ):
     # load data
@@ -105,7 +77,9 @@ def get_NS(
     train_pos_ref = pos_ref.repeat(num_train, 1, 1, 1).reshape(num_train, -1, ref*ref)
     test_pos_ref  = pos_ref.repeat(num_test,  1, 1, 1).reshape(num_test,  -1, ref*ref)
 
-    if missing_rate == 0.05:
+    if missing_rate == 0.0:
+        missing_rate_high = 0.05
+    elif missing_rate == 0.05:
         missing_rate_high = 0.25
     elif missing_rate == 0.25:
         missing_rate_high = 0.5
@@ -122,6 +96,9 @@ def get_NS(
         test_mask = torch.ones_like(test_au)
         test_a    = test_au[...,   :10]
         test_u    = test_au[..., 10:  ]
+        # test high
+        test_au_high_, test_mask_high = add_point_missing(test_au, int(np.round(missing_rate_high * 4096)))
+        test_a_high   = test_au_high_[...,   :10]
     elif task == "task1":
         num_sampling = int(np.round(missing_rate * 4096))
         # train

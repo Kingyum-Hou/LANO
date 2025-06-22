@@ -1,5 +1,5 @@
 import torch
-from x_transformers import TransformerWrapper, Decoder
+from xformers import TransformerWrapper, Decoder
 
 model = TransformerWrapper(
     num_tokens = 20000,

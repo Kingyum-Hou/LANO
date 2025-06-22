@@ -8,7 +8,7 @@ from dataloaders.era5 import get_ERA5, ERA5Dataset, ERA5Dataset4test
 from dataloaders.swe import get_SWE, SWEDataset, SWEDataset4test
 from dataloaders.diffusion import get_DIFFUSION, DIFFUSIONDataset, DIFFUSIONDataset4test
 from dataloaders.elas import get_ELAS, ELASDataset, ELASDataset4test
-from dataloaders.hadcurt5 import get_HADCRUT5, HADCRUT5Dataset, HADCRUT5Dataset4test
+from dataloaders.hadcrut5 import get_HADCRUT5, HADCRUT5Dataset, HADCRUT5Dataset4test
 
 
 class NS_DataModule(pl.LightningDataModule):

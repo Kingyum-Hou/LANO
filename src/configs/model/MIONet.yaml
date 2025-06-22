@@ -3,7 +3,7 @@ params_model:
   name: MIONet
   activation: 'relu'
   initializer: 'default'
-  input_size:
+  input_size: 10
   space_dim:  ${datamodule.space_dim}
   space_size: ${datamodule.space_size}
   missing_rate: ${datamodule.missing_rate}

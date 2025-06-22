@@ -24,7 +24,7 @@ def plt_era5(data0, mask0, img_path):
     plt.clf()
 
 
-def plt_era5_3D(data0, mask0, img_path):
+def plt_era5_3D(data0, img_path):
     fig = plt.figure(figsize=(8, 6))
     #ax = fig.add_subplot(111, projection='3d')
     ax = fig.add_subplot(111, projection=ccrs.Orthographic(0, 0))
@@ -86,25 +86,16 @@ data = torch.tensor(np.array(ds["t"]))
 h = int((H / downsample))
 w = int((W / downsample))
 Tn = 7 * int(data.shape[0] / 7)
-missing_rate = 0.25
+missing_rate = 0.
 data = data[:, :720, :]
 data = data[:, ::downsample, ::downsample]
+data = data[::200, ...].permute(1, 2, 0).reshape(-1, 13)
+data_missing, mask = add_patch_missing(data.unsqueeze(dim=0), missing_rate, (h, w), patch_size=9)
+data_missing  = data_missing.reshape(1, h, w, 13)
 
-data_list = []
-for i in range(0, 200, 7):
-    data_list.append(data[i:i+14, ...])
-data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1)
-
-sub_data = data[:10, ...].reshape(10, -1, 14)
-data_missing, mask = add_patch_missing(sub_data[:5], missing_rate, (h, w), patch_size=3)
-data_missing  = data_missing.reshape(5, h, w, 14)
-mask_missing  = mask.reshape(5, h, w, 14).bool()
-data_complete = sub_data[5:].reshape(5, h, w, 14)
-
-data0 = data_complete[0, :, :, :]
-mask0 = mask_missing[ 0, :, :, 0]
+data0 = data_missing[0, :, :, :]
 
 
 for i in range(7):
     data0i = data0[:, :, i]
-    plt_era5_3D(data0i, mask0, f"imgs/era5_{i}.png")
+    plt_era5_3D(data0i, f"imgs/era5_{i}.png")

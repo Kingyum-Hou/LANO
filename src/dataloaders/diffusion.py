@@ -2,40 +2,10 @@ import torch
 import numpy as np
 import h5py
 from torch.utils.data import Dataset
-from tools import get_pos, get_pos_ref, reshape2blocks, reshape2data
+from tools import get_pos, get_pos_ref, add_point_missing, add_patch_missing
 from einops import rearrange
 from scipy.interpolate import griddata
 from scipy import io as scio
-
-
-def add_point_missing(data, num_sampling):
-    B, HW, T   = data.shape
-
-    valid_data = data.clone()
-    valid_mask = torch.ones_like(valid_data)
-    for i in range(B):
-        indices_addMissing = torch.randperm(HW)[:num_sampling]
-        valid_data[i, indices_addMissing, ...] = 0.
-        valid_mask[i, indices_addMissing, ...] = 0.
-    return valid_data, valid_mask
-
-
-def add_patch_missing(data, missing_rate, space_size, patch_size=4):
-    patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
-    total_patches = np.prod(patch_num)
-    patch_holes_num = int(np.round(total_patches * missing_rate))
-    B = data.shape[0]
-
-    valid_data = reshape2blocks(data, patch_size, patch_num)
-    valid_mask = torch.ones_like(valid_data)
-    for i in range(B):
-        indices_addHoles = torch.randperm(total_patches)[:patch_holes_num]
-        valid_data[i, indices_addHoles, ...] = 0.
-        valid_mask[i, indices_addHoles, ...] = 0.
-    
-    valid_data = reshape2data(valid_data, patch_size, patch_num)
-    valid_mask = reshape2data(valid_mask, patch_size, patch_num)
-    return valid_data, valid_mask
 
 
 def get_DIFFUSION(

@@ -1,0 +1,14 @@
+_target_:     dataloaders.data_interface.HADCRUT5_DataModule
+name:         HADCRUT5
+data_dir:     /data/jingren/repository/dataset/HadCRUT_5/HadCRUT.5.0.2.0.analysis.anomalies.1.nc
+data_dir_mask: /data/jingren/repository/dataset/HadCRUT_5/1_to_10_netcdf/HadCRUT.5.0.2.0.anomalies.1.nc
+task:         task3
+missing_rate: 0.5
+n_train_test: [300, 50]
+b_train_test: [2, 2]
+num_workers:  2
+space_size:   [36, 72]
+space_dim:    2
+T_all:        12
+downsample:   1
+ref:          ${model.params_model.ref}
