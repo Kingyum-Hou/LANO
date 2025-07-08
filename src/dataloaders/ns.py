@@ -53,7 +53,7 @@ def cubicInterp(data, mask):
 
 
 def get_NS(
-        name, data_dir, data_mask_dir, num_train, num_test, space_size,
+        name, data_dir, num_train, num_test, space_size,
         task, T_all, missing_rate, ref
     ):
     # load data

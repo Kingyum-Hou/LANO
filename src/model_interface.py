@@ -10,6 +10,7 @@ from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, 
 from models.FNO import FNO2d
 from models.Ours import OursModel
 from models.Ours_irregular import OursIrregularModel
+from models.Ours_lno import OursLNOModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
@@ -42,7 +43,8 @@ def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[
         B, N, T = mask.shape
         mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
         num_observed = len(torch.nonzero(mask_patch[0, :, 0, 0, 0], as_tuple=False))
-        num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
+        #num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
+        num_to_flip = int(num_observed*0.2)
         for b in range(B):
             true_indices = torch.nonzero(mask_patch[b, :, 0, 0, 0], as_tuple=False).squeeze(1)
             indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]
@@ -144,6 +146,8 @@ def get_model(cfg):
         model = OursModel(cfg)
     elif cfg.name == "Ours_irregular":
         model = OursIrregularModel(cfg)
+    elif cfg.name == "Ours_lno":
+        model = OursLNOModel(cfg)
     else:
         raise NotImplementedError
     return model
@@ -544,7 +548,8 @@ class OursModule(ModuleTemplate):
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16]) # NS patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task) 
         #agent_mask = mask_.clone()  # no agent mission
         pred_trajectory = []
@@ -559,8 +564,8 @@ class OursModule(ModuleTemplate):
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
-            psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            loss += self.surrogate_ratio * self.loss_surrogate(psi1, psi2)
+            #psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
+            #loss += self.surrogate_ratio * self.loss_surrogate(psi1, psi2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)

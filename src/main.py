@@ -10,6 +10,9 @@ from hydra.utils import instantiate
 from typing import (Optional, List)
 import logging
 from pytorch_lightning.strategies import DDPStrategy
+from pytorch_lightning.profilers import PyTorchProfiler
+from pytorch_lightning.utilities import rank_zero_only
+
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
 logging.getLogger('cfgrib').setLevel(logging.WARNING)
 logging.getLogger("fsspec.local").setLevel(logging.WARNING)
@@ -40,14 +43,14 @@ def train(cfg: DictConfig) -> Optional[float]:
     for _, cfg_logger in cfg.logger.items():
         if "_target_" in cfg_logger:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
-    # Init trainer
+
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
     #trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger, strategy=DDPStrategy(find_unused_parameters=True))
+    
     trainer.fit(model=model, datamodule=datamodule)
     testLoss_dict = trainer.test(model=model, datamodule=datamodule, ckpt_path="best")[0]
-
+    
     logger.experiment.finish()
-
     del datamodule, model, callbacks, trainer, logger
     gc.collect()
     torch.cuda.empty_cache()

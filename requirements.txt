@@ -7,11 +7,7 @@ scipy
 torchprofile
 einops
 h5py
-<<<<<<< HEAD
 xformers
 jupyter
 pytorch-cluster
 pytorch_scatter
-=======
-pytorch-lightning
->>>>>>> origin/master

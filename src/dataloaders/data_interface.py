@@ -40,7 +40,8 @@ class NS_DataModule(pl.LightningDataModule):
         self.space_size   = space_size
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data, test_data_high = get_NS(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref)
+        train_data, test_data, test_data_high = get_NS(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, 
+                                                       self.task, self.T_all, self.missing_rate, self.ref)
         self.train_data  = NSDataset(*train_data, self.task)
         self.valid_data  = NSDataset(*test_data,  self.task)
         self.test_data   = NSDataset4test(test_data, test_data_high, self.task)

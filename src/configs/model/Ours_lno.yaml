@@ -1,0 +1,25 @@
+_target_: model_interface.OursModule
+params_model:
+  name: Ours_lno
+  input_size: 10
+  output_size: 1
+  ntrain: ${datamodule.n_train_test[0]}
+  ntest:  ${datamodule.n_train_test[1]}
+  scale_factor: 2.
+  space_size: ${datamodule.space_size}
+  ref: 8
+  hidden_size: 256
+  head_size: 32
+  heads_num: 8
+  kernel_layers: 8
+  feature_basis_num: 32
+  alpha: 1e-5
+  t: 10
+  downsample: ${datamodule.downsample}
+  monitor: train/full_loss
+  surrogate_ratio: 5e-2
+  token_Mixer: Attention
+
+params_optim: ${optim}
+
+params_scheduler: ${scheduler}
