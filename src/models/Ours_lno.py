@@ -325,7 +325,7 @@ class OursLNOModel(nn.Module):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
-                    args.feature_basis_num, 
+                    args.latent_num, 
                     args.heads_num,
                     token_Mixer=args.token_Mixer
                 )
