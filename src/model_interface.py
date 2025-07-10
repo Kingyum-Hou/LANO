@@ -43,8 +43,8 @@ def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[
         B, N, T = mask.shape
         mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
         num_observed = len(torch.nonzero(mask_patch[0, :, 0, 0, 0], as_tuple=False))
-        #num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
-        num_to_flip = int(num_observed*0.2)
+        #num_to_flip = int(num_observed*0.2)
+        num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
         for b in range(B):
             true_indices = torch.nonzero(mask_patch[b, :, 0, 0, 0], as_tuple=False).squeeze(1)
             indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]

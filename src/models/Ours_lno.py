@@ -198,9 +198,12 @@ class Temperature(nn.Module):
 
 
 class PhCA_Encoder(nn.Module):
-    def __init__(self, hidden_size, latent_num):
+    def __init__(self, hidden_size, heads_num, latent_num):
         super().__init__()
-        self.attention_encoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
+        self.head_size = hidden_size // heads_num
+        self.heads_num = heads_num
+        self.attention_encoder = MLP(self.head_size, latent_num, latent_num, n_layers=0, act='gelu', res=False)
+        self.temperature = Temperature(heads_num, temperature=0.5)
 
     def _init_weights(self, module):
         if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
@@ -211,18 +214,28 @@ class PhCA_Encoder(nn.Module):
             module.weight.data.fill_(1.0)
             module.bias.data.zero_()
 
-    def forward(self, x, y):
-        score_encode = self.attention_encoder(x)
-        score_encode = torch.softmax(score_encode, dim=1)
-        z = torch.einsum("bnl, bnc -> blc", score_encode, y)
-        # TODO: 归一化
-        return z
+    def forward(self, y, no_valid):
+        y = rearrange(y, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
+        score_encode = self.attention_encoder(y)
+        score_encode = self.temperature(score_encode)
+        score_encode = torch.softmax(score_encode, dim=-1)
+
+        z = torch.einsum("bhnl, bhnc -> bhlc", score_encode, y).contiguous()
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        score_encode = score_encode.masked_fill(no_valid, 0.)
+        
+        score_encode_norm = score_encode.sum(dim=2)
+        z = z / (score_encode_norm + 1e-6)[:, :, :, None]
+        z = rearrange(z, 'b h l c -> b l (h c)')
+        return z, score_encode
     
 
 class PhCA_Decoder(nn.Module):
-    def __init__(self, hidden_size, latent_num):
+    def __init__(self, hidden_size, heads_num, latent_num):
         super().__init__()
-        self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
+        self.heads_num = heads_num
+        self.head_size = hidden_size // heads_num
+        #self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
 
     def _init_weights(self, module):
         if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
@@ -233,48 +246,45 @@ class PhCA_Decoder(nn.Module):
             module.weight.data.fill_(1.0)
             module.bias.data.zero_()
 
-    def forward(self, x, z):
-        score_decode = self.attention_decoder(x)
-        score_decode = torch.softmax(score_decode, dim=-1)
-        y = torch.einsum("bnl, blc -> bnc", score_decode, z)
-        # TODO: 归一化
+    def forward(self, z, score):
+        z = rearrange(z, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        y = torch.einsum("bhnl, bhlc -> bhnc", score, z)
+        y = rearrange(y, 'b h n c -> b n (h c)')
         return y
     
 
 class PhLP(nn.Module):
-    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer):
+    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer, space_size):
         super().__init__()
         head_size = hidden_size // heads_num
         self.head_size   = head_size
-        self.head_num    = heads_num
+        self.heads_num   = heads_num
         self.token_Mixer = token_Mixer
+        self.space_size  = space_size
+        self.latent_num  = latent_num
 
-        self.trunk_projector = MLP(64, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        #self.trunk_projector = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         #self.branch_projector = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
 
-        self.phca_encoder = PhCA_Encoder(hidden_size, latent_num)
-        self.phca_decoder = PhCA_Decoder(hidden_size, latent_num)
+        self.phca_encoder = PhCA_Encoder(hidden_size, heads_num, latent_num)
+        self.phca_decoder = PhCA_Decoder(hidden_size, heads_num, latent_num)
         
         if token_Mixer == 'Attention':
             self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
         if token_Mixer == 'MLP':
             self.conjugate = MLP(latent_num, latent_num*2, latent_num, n_layers=0, act='gelu')
-        self.neighbor = neighborConv()
+        #self.neighbor = neighborConv()
+        self.conv = PartialConv(heads_num*latent_num, heads_num*latent_num, 3, padding=1)
 
-    def forward(self, pos, y, mask):
-        B = y.shape[0]
-        x = self.trunk_projector(pos)
-        #y = self.branch_projector(y)
-
+    def forward(self, y, mask):
         # encoder
         no_valid = mask == 0
-        x_in = x.masked_fill(no_valid, 0.)
-        y = y.masked_fill(no_valid, 0.)
-        z = self.phca_encoder(x_in, y)
+        y_in = y.masked_fill(no_valid, 0.)
+        z, score = self.phca_encoder(y_in, no_valid)
 
         # conjugate operator
         if self.token_Mixer == 'Attention':
-            z = rearrange(z, 'b f (h c) -> b f h c', h=self.head_num, c=self.head_size)
+            z = rearrange(z, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
             query, key, value = self.to_qkv(z).chunk(3, dim = -1)
             z = memory_efficient_attention(query, key, value)
             z = rearrange(z, 'b f h c -> b f (h c)')
@@ -283,26 +293,29 @@ class PhLP(nn.Module):
             z = self.conjugate(z)
             z = z.permute(0, 2, 1)
         
+        # calculate score
+        next_score = rearrange(score, 'b h (H W) l -> b (h l) H W', H=self.space_size[0], W=self.space_size[1])
+        next_mask  = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1])
+        next_mask  = next_mask.repeat(1, self.heads_num*self.latent_num, 1, 1)
+        next_score, next_mask = self.conv(next_score, next_mask)
+        next_score = rearrange(next_score, 'b (h l) H W -> b h (H W) l', h=self.heads_num, l=self.latent_num)
+        next_mask  = rearrange(next_mask, 'b c H W -> b (H W) c')[..., :1]
         # decoder
-        new_mask = self.neighbor(mask.reshape(B, 64, 64, 1).permute(0, 3, 1, 2))
-        new_mask = new_mask.permute(0, 2, 3, 1).reshape(B, 64*64, 1)
-        no_valid = new_mask == 0
-        x_out = x.masked_fill(no_valid, 0.)
-        y = self.phca_decoder(x_out, z)
-        return y, new_mask
+        y_out = self.phca_decoder(z, next_score)
+        return y_out, next_mask
     
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer='Attention'):
+    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer='Attention', space_size=(64,64)):
         super().__init__()
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
-        self.phlp = PhLP(hidden_size, latent_num, heads_num, token_Mixer=token_Mixer)
+        self.phlp = PhLP(hidden_size, latent_num, heads_num, token_Mixer=token_Mixer, space_size=space_size)
         self.mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         
-    def forward(self, pos, y, mask):
+    def forward(self, y, mask):
         # PhLP
-        y_, new_mask = self.phlp(pos, self.ln_1(y), mask)
+        y_, new_mask = self.phlp(self.ln_1(y), mask)
         y  = y_ + y
         # mlp
         y = self.mlp(self.ln_2(y)) + y
@@ -327,7 +340,8 @@ class OursLNOModel(nn.Module):
                     args.hidden_size, 
                     args.latent_num, 
                     args.heads_num,
-                    token_Mixer=args.token_Mixer
+                    token_Mixer=args.token_Mixer,
+                    space_size=(h, w)
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)
@@ -349,15 +363,6 @@ class OursLNOModel(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def get_psi(self, pos, x, mask1, mask2):
-        if pos.dim()>3:
-            pos = rearrange(pos, 'b ... c -> b (...) c')
-        z = torch.concat([pos, x], dim=-1)
-        z = self.featureExpander(z)
-        psi1 = self.kernelProcessor[0].get_psi(z, mask1)
-        psi2 = self.kernelProcessor[0].get_psi(z, mask2)
-        return psi1, psi2
-
     def forward(self, pos, x, mask):
         if pos.dim()>3:
             pos = rearrange(pos, 'b ... c -> b (...) c')
@@ -365,7 +370,7 @@ class OursLNOModel(nn.Module):
         y = self.featureExpander(y)
 
         for _, block in enumerate(self.kernelProcessor):
-            y, mask = block(pos, y, mask)
+            y, mask = block(y, mask)
     
         x  = self.projector(y)
         return x
