@@ -43,6 +43,7 @@ def train(cfg: DictConfig) -> Optional[float]:
     for _, cfg_logger in cfg.logger.items():
         if "_target_" in cfg_logger:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
+    logger.watch(model, log="all")
 
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
     #trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger, strategy=DDPStrategy(find_unused_parameters=True))
@@ -62,7 +63,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     testLoss_dict = train(cfg)
     requests.get(
         cfg.bark_url +
-        f"ANOT_{cfg.datamodule.name}_{cfg.datamodule.task}_{cfg.datamodule.missing_rate}_{cfg.model.params_model.name}_{cfg.tag}/" +
+        f"AAAI26_{cfg.datamodule.name}_{cfg.datamodule.task}_{cfg.datamodule.missing_rate}_{cfg.model.params_model.name}_{cfg.tag}/" +
         f"full_loss={testLoss_dict['test/full_loss']:.4f}" +
         f"?sound={cfg.sound}"
     )

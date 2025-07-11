@@ -3,3 +3,4 @@ wandb:
   project: AAAI26
   mode: 'online'
   save_dir: ${hydra:run.dir}
+  name: ${tag}_${datamodule.name}_${datamodule.task}_${datamodule.missing_rate}_${model.params_model.name}_hidden${model.params_model.hidden_size}_latent${model.params_model.feature_basis_num}_TM-${model.params_model.token_Mixer}

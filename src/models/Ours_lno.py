@@ -275,6 +275,7 @@ class PhLP(nn.Module):
             self.conjugate = MLP(latent_num, latent_num*2, latent_num, n_layers=0, act='gelu')
         #self.neighbor = neighborConv()
         self.conv = PartialConv(heads_num*latent_num, heads_num*latent_num, 3, padding=1)
+        self.linear = nn.Linear(hidden_size, hidden_size)
 
     def forward(self, y, mask):
         # encoder
@@ -302,6 +303,7 @@ class PhLP(nn.Module):
         next_mask  = rearrange(next_mask, 'b c H W -> b (H W) c')[..., :1]
         # decoder
         y_out = self.phca_decoder(z, next_score)
+        y_out = self.linear(y_out)
         return y_out, next_mask
     
 

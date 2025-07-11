@@ -13,6 +13,7 @@ params_model:
   heads_num: 8
   kernel_layers: 8
   latent_num: 32
+  feature_basis_num: 32
   alpha: 1e-5
   t: 10
   downsample: ${datamodule.downsample}
