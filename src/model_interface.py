@@ -564,8 +564,8 @@ class OursModule(ModuleTemplate):
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
-            #psi1, psi2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            #loss += self.surrogate_ratio * self.loss_surrogate(psi1, psi2)
+            z1, z2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
+            loss += self.surrogate_ratio * self.loss_surrogate(z1, z2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)

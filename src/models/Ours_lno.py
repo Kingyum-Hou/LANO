@@ -124,70 +124,6 @@ class neighborConv(nn.Module):
         return new_mask
 
 
-class RotaryEmbedding(nn.Module):
-    """
-    New position encoding module
-    modified from https://github.com/lucidrains/x-transformers/blob/main/x_transformers/x_transformers.py
-    """
-    def __init__(self, dim, min_freq=1/64, scale=1.):
-        super().__init__()
-        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        self.min_freq = min_freq
-        self.scale = scale
-        self.register_buffer('inv_freq', inv_freq)
-
-    def forward(self, coordinates, device):
-        # coordinates [b, n]
-        t = coordinates.to(device).type_as(self.inv_freq)
-        t = t * (self.scale / self.min_freq)
-        freqs = torch.einsum('... i , j -> ... i j', t, self.inv_freq)  # [b, n, d//2]
-        return torch.cat((freqs, freqs), dim=-1)  # [b, n, d]
-
-
-class ApplyRotaryEmbedding():
-    """
-    A class to apply rotary positional embeddings to input tensors.
-    Attributes: 
-        space_dim : int : The dimensionality of the space (1D or 2D) for the rotary embedding.
-    refer to:
-    https://github.com/BaratiLab/OFormer/blob/main/uniform_grids/nn_module/attention_module.py#L96
-    """
-    def __init__(self, space_dim):
-        self.name = 'rotaryEmbedding'
-        self.space_dim = space_dim
-
-    def rotate_half(self, x):
-        x = rearrange(x, '... (j d) -> ... j d', j = 2)
-        x1, x2 = x.unbind(dim = -2)
-        return torch.cat((-x2, x1), dim = -1)
-
-    def apply_rotary_pos_emb(self, t, freqs):
-        return (t * freqs.cos()) + (self.rotate_half(t) * freqs.sin())
-
-
-    def apply_2d_rotary_pos_emb(self, t, freqs_x, freqs_y):
-        # split t into first half and second half
-        # t: [b, h, n, d]
-        # freq_x/y: [b, n, d]
-        d = t.shape[-1]
-        t_x, t_y = t[..., :d//2], t[..., d//2:]
-
-        return torch.cat(
-            (
-                self.apply_rotary_pos_emb(t_x, freqs_x),
-                self.apply_rotary_pos_emb(t_y, freqs_y)
-            ), dim=-1
-        )
-
-    def __call__(self, t, **freqs):
-        if self.space_dim == 1:
-            return self.apply_rotary_pos_emb(t, freqs)
-        elif self.space_dim == 2:
-            return self.apply_2d_rotary_pos_emb(t, freqs['freqs_x'], freqs['freqs_y'])
-        else:
-            raise Exception('Currently doesnt support relative embedding > 2 dimensions')
-
-
 class Temperature(nn.Module):
     def __init__(self, heads_num, temperature=0.5):
         super().__init__()
@@ -219,11 +155,10 @@ class PhCA_Encoder(nn.Module):
         score_encode = self.attention_encoder(y)
         score_encode = self.temperature(score_encode)
         score_encode = torch.softmax(score_encode, dim=-1)
-
         z = torch.einsum("bhnl, bhnc -> bhlc", score_encode, y).contiguous()
+        
         no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
         score_encode = score_encode.masked_fill(no_valid, 0.)
-        
         score_encode_norm = score_encode.sum(dim=2)
         z = z / (score_encode_norm + 1e-6)[:, :, :, None]
         z = rearrange(z, 'b h l c -> b l (h c)')
@@ -295,10 +230,9 @@ class PhLP(nn.Module):
             z = z.permute(0, 2, 1)
         
         # calculate score
-        next_score = rearrange(score, 'b h (H W) l -> b (h l) H W', H=self.space_size[0], W=self.space_size[1])
-        next_mask  = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1])
-        next_mask  = next_mask.repeat(1, self.heads_num*self.latent_num, 1, 1)
-        next_score, next_mask = self.conv(next_score, next_mask)
+        score = rearrange(score, 'b h (H W) l -> b (h l) H W', H=self.space_size[0], W=self.space_size[1])
+        mask  = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1]).repeat(1, self.heads_num*self.latent_num, 1, 1)
+        next_score, next_mask = self.conv(score, mask)
         next_score = rearrange(next_score, 'b (h l) H W -> b h (H W) l', h=self.heads_num, l=self.latent_num)
         next_mask  = rearrange(next_mask, 'b c H W -> b (H W) c')[..., :1]
         # decoder
@@ -322,11 +256,22 @@ class KernelIntegrator(nn.Module):
         # mlp
         y = self.mlp(self.ln_2(y)) + y
         return y, new_mask
+    
+    def get_middle_features(self, y, mask):
+        # encoder of phlp
+        no_valid = mask == 0
+        y_in = y.masked_fill(no_valid, 0.)
+        z, _ = self.phlp.phca_encoder(self.ln_1(y_in), no_valid)
+        return z
 
 
 class OursLNOModel(nn.Module):
     def __init__(self, args):
         super().__init__()
+        h = int((args.space_size[0] / args.downsample))
+        w = int((args.space_size[1] / args.downsample))
+        self.head_size = args.hidden_size // args.heads_num
+        self.heads_num = args.heads_num
 
         self.featureExpander = MLP(
             args.input_size + args.ref*args.ref, 
@@ -334,8 +279,6 @@ class OursLNOModel(nn.Module):
             n_layers=0, act='gelu', res=False
         )
         self.kernelProcessor = []
-        h = int((args.space_size[0] / args.downsample))
-        w = int((args.space_size[1] / args.downsample))
         for _ in range(args.kernel_layers):
             self.kernelProcessor.append(
                 KernelIntegrator(
@@ -364,6 +307,18 @@ class OursLNOModel(nn.Module):
         elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d)):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
+
+    #def get_middle_features(self, pos, x, mask1, mask2):
+    def get_psi(self, pos, x, mask1, mask2):
+        if pos.dim()>3:
+            pos = rearrange(pos, 'b ... c -> b (...) c')
+        y = torch.concat([pos, x], dim=-1)
+        y = self.featureExpander(y)
+        z1 = self.kernelProcessor[0].get_middle_features(y, mask1)
+        z2 = self.kernelProcessor[0].get_middle_features(y, mask2)
+        z1 = rearrange(z1, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        z2 = rearrange(z2, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        return z1, z2
 
     def forward(self, pos, x, mask):
         if pos.dim()>3:

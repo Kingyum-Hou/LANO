@@ -18,7 +18,7 @@ params_model:
   t: 10
   downsample: ${datamodule.downsample}
   monitor: train/full_loss
-  surrogate_ratio: 5e-2
+  surrogate_ratio: 0.1
   token_Mixer: Attention
 
 params_optim: ${optim}
