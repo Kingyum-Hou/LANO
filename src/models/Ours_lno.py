@@ -141,15 +141,6 @@ class PhCA_Encoder(nn.Module):
         self.attention_encoder = MLP(self.head_size, latent_num, latent_num, n_layers=0, act='gelu', res=False)
         self.temperature = Temperature(heads_num, temperature=0.5)
 
-    def _init_weights(self, module):
-        if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=0.0002)
-            if isinstance(module, torch.nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, torch.nn.LayerNorm):
-            module.weight.data.fill_(1.0)
-            module.bias.data.zero_()
-
     def forward(self, y, no_valid):
         y = rearrange(y, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
         score_encode = self.attention_encoder(y)
@@ -171,15 +162,6 @@ class PhCA_Decoder(nn.Module):
         self.heads_num = heads_num
         self.head_size = hidden_size // heads_num
         #self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
-
-    def _init_weights(self, module):
-        if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=0.0002)
-            if isinstance(module, torch.nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, torch.nn.LayerNorm):
-            module.weight.data.fill_(1.0)
-            module.bias.data.zero_()
 
     def forward(self, z, score):
         z = rearrange(z, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
@@ -215,8 +197,7 @@ class PhLP(nn.Module):
     def forward(self, y, mask):
         # encoder
         no_valid = mask == 0
-        y_in = y.masked_fill(no_valid, 0.)
-        z, score = self.phca_encoder(y_in, no_valid)
+        z, score = self.phca_encoder(y, no_valid)
 
         # conjugate operator
         if self.token_Mixer == 'Attention':
@@ -250,12 +231,15 @@ class KernelIntegrator(nn.Module):
         self.mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         
     def forward(self, y, mask):
+        no_valid = mask == 0
+        y_in = y.masked_fill(no_valid, 0.)
+
         # PhLP
-        y_, new_mask = self.phlp(self.ln_1(y), mask)
-        y  = y_ + y
+        y_in_, new_mask = self.phlp(self.ln_1(y_in), mask)
+        y_out = y_in_ + y_in
         # mlp
-        y = self.mlp(self.ln_2(y)) + y
-        return y, new_mask
+        y_out = self.mlp(self.ln_2(y_out)) + y_out
+        return y_out, new_mask
     
     def get_middle_features(self, y, mask):
         # encoder of phlp
