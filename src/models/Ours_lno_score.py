@@ -124,70 +124,6 @@ class neighborConv(nn.Module):
         return new_mask
 
 
-class RotaryEmbedding(nn.Module):
-    """
-    New position encoding module
-    modified from https://github.com/lucidrains/x-transformers/blob/main/x_transformers/x_transformers.py
-    """
-    def __init__(self, dim, min_freq=1/64, scale=1.):
-        super().__init__()
-        inv_freq = 1. / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        self.min_freq = min_freq
-        self.scale = scale
-        self.register_buffer('inv_freq', inv_freq)
-
-    def forward(self, coordinates, device):
-        # coordinates [b, n]
-        t = coordinates.to(device).type_as(self.inv_freq)
-        t = t * (self.scale / self.min_freq)
-        freqs = torch.einsum('... i , j -> ... i j', t, self.inv_freq)  # [b, n, d//2]
-        return torch.cat((freqs, freqs), dim=-1)  # [b, n, d]
-
-
-class ApplyRotaryEmbedding():
-    """
-    A class to apply rotary positional embeddings to input tensors.
-    Attributes: 
-        space_dim : int : The dimensionality of the space (1D or 2D) for the rotary embedding.
-    refer to:
-    https://github.com/BaratiLab/OFormer/blob/main/uniform_grids/nn_module/attention_module.py#L96
-    """
-    def __init__(self, space_dim):
-        self.name = 'rotaryEmbedding'
-        self.space_dim = space_dim
-
-    def rotate_half(self, x):
-        x = rearrange(x, '... (j d) -> ... j d', j = 2)
-        x1, x2 = x.unbind(dim = -2)
-        return torch.cat((-x2, x1), dim = -1)
-
-    def apply_rotary_pos_emb(self, t, freqs):
-        return (t * freqs.cos()) + (self.rotate_half(t) * freqs.sin())
-
-
-    def apply_2d_rotary_pos_emb(self, t, freqs_x, freqs_y):
-        # split t into first half and second half
-        # t: [b, h, n, d]
-        # freq_x/y: [b, n, d]
-        d = t.shape[-1]
-        t_x, t_y = t[..., :d//2], t[..., d//2:]
-
-        return torch.cat(
-            (
-                self.apply_rotary_pos_emb(t_x, freqs_x),
-                self.apply_rotary_pos_emb(t_y, freqs_y)
-            ), dim=-1
-        )
-
-    def __call__(self, t, **freqs):
-        if self.space_dim == 1:
-            return self.apply_rotary_pos_emb(t, freqs)
-        elif self.space_dim == 2:
-            return self.apply_2d_rotary_pos_emb(t, freqs['freqs_x'], freqs['freqs_y'])
-        else:
-            raise Exception('Currently doesnt support relative embedding > 2 dimensions')
-
-
 class Temperature(nn.Module):
     def __init__(self, heads_num, temperature=0.5):
         super().__init__()
@@ -198,83 +134,74 @@ class Temperature(nn.Module):
 
 
 class PhCA_Encoder(nn.Module):
-    def __init__(self, hidden_size, latent_num):
+    def __init__(self, hidden_size, heads_num, latent_num):
         super().__init__()
-        self.attention_encoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
+        self.head_size = hidden_size // heads_num
+        self.heads_num = heads_num
+        self.attention_encoder = MLP(self.head_size, latent_num, latent_num, n_layers=0, act='gelu', res=False)
+        self.temperature = Temperature(heads_num, temperature=0.5)
 
-    def _init_weights(self, module):
-        if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=0.0002)
-            if isinstance(module, torch.nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, torch.nn.LayerNorm):
-            module.weight.data.fill_(1.0)
-            module.bias.data.zero_()
-
-    def forward(self, x, y):
-        score_encode = self.attention_encoder(x)
-        score_encode = torch.softmax(score_encode, dim=1)
-        z = torch.einsum("bnl, bnc -> blc", score_encode, y)
-        # TODO: 归一化
-        return z
+    def forward(self, y, no_valid):
+        y = rearrange(y, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
+        score_encode = self.attention_encoder(y)
+        score_encode = self.temperature(score_encode)
+        score_encode = torch.softmax(score_encode, dim=-1)
+        z = torch.einsum("bhnl, bhnc -> bhlc", score_encode, y).contiguous()
+        
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        score_encode = score_encode.masked_fill(no_valid, 0.)
+        score_encode_norm = score_encode.sum(dim=2)
+        z = z / (score_encode_norm + 1e-6)[:, :, :, None]
+        z = rearrange(z, 'b h l c -> b l (h c)')
+        return z, score_encode
     
 
 class PhCA_Decoder(nn.Module):
-    def __init__(self, hidden_size, latent_num):
+    def __init__(self, hidden_size, heads_num, latent_num):
         super().__init__()
-        self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
+        self.heads_num = heads_num
+        self.head_size = hidden_size // heads_num
+        #self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
 
-    def _init_weights(self, module):
-        if isinstance(module, (torch.nn.Linear, torch.nn.Embedding)):
-            module.weight.data.normal_(mean=0.0, std=0.0002)
-            if isinstance(module, torch.nn.Linear) and module.bias is not None:
-                module.bias.data.zero_()
-        elif isinstance(module, torch.nn.LayerNorm):
-            module.weight.data.fill_(1.0)
-            module.bias.data.zero_()
-
-    def forward(self, x, z):
-        score_decode = self.attention_decoder(x)
-        score_decode = torch.softmax(score_decode, dim=-1)
-        y = torch.einsum("bnl, blc -> bnc", score_decode, z)
-        # TODO: 归一化
+    def forward(self, z, score):
+        z = rearrange(z, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        y = torch.einsum("bhnl, bhlc -> bhnc", score, z)
+        y = rearrange(y, 'b h n c -> b n (h c)')
         return y
     
 
 class PhLP(nn.Module):
-    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer):
+    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer, space_size):
         super().__init__()
         head_size = hidden_size // heads_num
         self.head_size   = head_size
-        self.head_num    = heads_num
+        self.heads_num   = heads_num
         self.token_Mixer = token_Mixer
+        self.space_size  = space_size
+        self.latent_num  = latent_num
 
-        self.trunk_projector = MLP(64, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        #self.trunk_projector = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         #self.branch_projector = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
 
-        self.phca_encoder = PhCA_Encoder(hidden_size, latent_num)
-        self.phca_decoder = PhCA_Decoder(hidden_size, latent_num)
+        self.phca_encoder = PhCA_Encoder(hidden_size, heads_num, latent_num)
+        self.phca_decoder = PhCA_Decoder(hidden_size, heads_num, latent_num)
         
         if token_Mixer == 'Attention':
             self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
         if token_Mixer == 'MLP':
             self.conjugate = MLP(latent_num, latent_num*2, latent_num, n_layers=0, act='gelu')
-        self.neighbor = neighborConv()
+        #self.neighbor = neighborConv()
+        self.conv = PartialConv(heads_num*latent_num, heads_num*latent_num, 3, padding=1)
+        self.linear = nn.Linear(hidden_size, hidden_size)
 
-    def forward(self, pos, y, mask):
-        B = y.shape[0]
-        x = self.trunk_projector(pos)
-        #y = self.branch_projector(y)
-
+    def forward(self, y, mask):
         # encoder
         no_valid = mask == 0
-        x_in = x.masked_fill(no_valid, 0.)
-        #y = y.masked_fill(no_valid, 0.)
-        z = self.phca_encoder(x_in, y)
+        z, score = self.phca_encoder(y, no_valid)
 
         # conjugate operator
         if self.token_Mixer == 'Attention':
-            z = rearrange(z, 'b f (h c) -> b f h c', h=self.head_num, c=self.head_size)
+            z = rearrange(z, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
             query, key, value = self.to_qkv(z).chunk(3, dim = -1)
             z = memory_efficient_attention(query, key, value)
             z = rearrange(z, 'b f h c -> b f (h c)')
@@ -283,38 +210,52 @@ class PhLP(nn.Module):
             z = self.conjugate(z)
             z = z.permute(0, 2, 1)
         
+        # calculate score
+        score = rearrange(score, 'b h (H W) l -> b (h l) H W', H=self.space_size[0], W=self.space_size[1])
+        mask  = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1]).repeat(1, self.heads_num*self.latent_num, 1, 1)
+        next_score, next_mask = self.conv(score, mask)
+        next_score = rearrange(next_score, 'b (h l) H W -> b h (H W) l', h=self.heads_num, l=self.latent_num)
+        next_mask  = rearrange(next_mask, 'b c H W -> b (H W) c')[..., :1]
         # decoder
-        new_mask = self.neighbor(mask.reshape(B, 64, 64, 1).permute(0, 3, 1, 2))
-        new_mask = new_mask.permute(0, 2, 3, 1).reshape(B, 64*64, 1)
-        new_no_valid = new_mask == 0
-        x_out = x.masked_fill(new_no_valid, 0.)
-        y = self.phca_decoder(x_out, z)
-        return y, new_mask
+        y_out = self.phca_decoder(z, next_score)
+        y_out = self.linear(y_out)
+        return y_out, next_mask
     
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer='Attention'):
+    def __init__(self, hidden_size, latent_num, heads_num, token_Mixer='Attention', space_size=(64,64)):
         super().__init__()
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
-        self.phlp = PhLP(hidden_size, latent_num, heads_num, token_Mixer=token_Mixer)
+        self.phlp = PhLP(hidden_size, latent_num, heads_num, token_Mixer=token_Mixer, space_size=space_size)
         self.mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         
-    def forward(self, pos, y, mask):
+    def forward(self, y, mask):
         no_valid = mask == 0
         y_in = y.masked_fill(no_valid, 0.)
-        
+
         # PhLP
-        y_in_, new_mask = self.phlp(pos, self.ln_1(y_in), mask)
-        y_out  = y_in_ + y_in
+        y_in_, new_mask = self.phlp(self.ln_1(y_in), mask)
+        y_out = y_in_ + y_in
         # mlp
         y_out = self.mlp(self.ln_2(y_out)) + y_out
         return y_out, new_mask
+    
+    def get_middle_features(self, y, mask):
+        # encoder of phlp
+        no_valid = mask == 0
+        y_in = y.masked_fill(no_valid, 0.)
+        z, _ = self.phlp.phca_encoder(self.ln_1(y_in), no_valid)
+        return z
 
 
 class OursLNOModel(nn.Module):
     def __init__(self, args):
         super().__init__()
+        h = int((args.space_size[0] / args.downsample))
+        w = int((args.space_size[1] / args.downsample))
+        self.head_size = args.hidden_size // args.heads_num
+        self.heads_num = args.heads_num
 
         self.featureExpander = MLP(
             args.input_size + args.ref*args.ref, 
@@ -322,15 +263,14 @@ class OursLNOModel(nn.Module):
             n_layers=0, act='gelu', res=False
         )
         self.kernelProcessor = []
-        h = int((args.space_size[0] / args.downsample))
-        w = int((args.space_size[1] / args.downsample))
         for _ in range(args.kernel_layers):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
                     args.latent_num, 
                     args.heads_num,
-                    token_Mixer=args.token_Mixer
+                    token_Mixer=args.token_Mixer,
+                    space_size=(h, w)
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)
@@ -352,14 +292,17 @@ class OursLNOModel(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
+    #def get_middle_features(self, pos, x, mask1, mask2):
     def get_psi(self, pos, x, mask1, mask2):
         if pos.dim()>3:
             pos = rearrange(pos, 'b ... c -> b (...) c')
-        z = torch.concat([pos, x], dim=-1)
-        z = self.featureExpander(z)
-        psi1 = self.kernelProcessor[0].get_psi(z, mask1)
-        psi2 = self.kernelProcessor[0].get_psi(z, mask2)
-        return psi1, psi2
+        y = torch.concat([pos, x], dim=-1)
+        y = self.featureExpander(y)
+        z1 = self.kernelProcessor[0].get_middle_features(y, mask1)
+        z2 = self.kernelProcessor[0].get_middle_features(y, mask2)
+        z1 = rearrange(z1, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        z2 = rearrange(z2, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
+        return z1, z2
 
     def forward(self, pos, x, mask):
         if pos.dim()>3:
@@ -368,7 +311,7 @@ class OursLNOModel(nn.Module):
         y = self.featureExpander(y)
 
         for _, block in enumerate(self.kernelProcessor):
-            y, mask = block(pos, y, mask)
+            y, mask = block(y, mask)
     
         x  = self.projector(y)
         return x
