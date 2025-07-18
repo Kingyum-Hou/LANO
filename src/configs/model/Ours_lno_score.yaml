@@ -1,6 +1,6 @@
 _target_: model_interface.OursModule
 params_model:
-  name: Ours_lno
+  name: Ours_lno_score
   input_size: 10
   output_size: 1
   ntrain: ${datamodule.params_data.n_train_test[0]}
@@ -12,7 +12,7 @@ params_model:
   head_size: 32
   heads_num: 8
   kernel_layers: 8
-  latent_num: 256
+  latent_num: 32
   alpha: 1e-5
   t: 10
   downsample: ${datamodule.params_data.downsample}

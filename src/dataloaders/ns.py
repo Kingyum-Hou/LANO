@@ -54,7 +54,7 @@ def cubicInterp(data, mask):
 
 def get_NS(
         name, data_dir, num_train, num_test, space_size,
-        task, T_all, missing_rate, ref
+        task, T_all, missing_rate, ref, patch_size
     ):
     # load data
     H, W = space_size[0], space_size[1]
@@ -129,15 +129,15 @@ def get_NS(
         test_a_high   = test_au_high_[...,   :10]
     elif task == "task4":
         # train
-        train_au, train_mask = add_patch_missing(train_au, missing_rate, space_size, patch_size=4)
+        train_au, train_mask = add_patch_missing(train_au, missing_rate, space_size, patch_size=patch_size)
         train_a  = train_au[...,   :10]
         train_u  = train_au[..., 10:  ]
         # test
-        test_au_, test_mask = add_patch_missing(test_au, missing_rate, space_size, patch_size=4)
+        test_au_, test_mask = add_patch_missing(test_au, missing_rate, space_size, patch_size=patch_size)
         test_a   = test_au_[...,   :10]
         test_u   = test_au [..., 10:  ]
         # test high
-        test_au_high_, test_mask_high = add_patch_missing(test_au, missing_rate_high, space_size, patch_size=4)
+        test_au_high_, test_mask_high = add_patch_missing(test_au, missing_rate_high, space_size, patch_size=patch_size)
         test_a_high   = test_au_high_[...,   :10]
     else:
         raise NotImplementedError

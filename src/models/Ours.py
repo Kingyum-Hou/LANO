@@ -281,7 +281,7 @@ class OursModel(nn.Module):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
-                    args.feature_basis_num, 
+                    args.latent_num, 
                     args.heads_num,
                     space_size=[h, w],
                     token_Mixer=args.token_Mixer

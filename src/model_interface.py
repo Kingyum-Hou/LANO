@@ -11,6 +11,7 @@ from models.FNO import FNO2d
 from models.Ours import OursModel
 from models.Ours_irregular import OursIrregularModel
 from models.Ours_lno import OursLNOModel
+from models.Ours_lno_score import OursLNOScoreModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.OFORMER_FILLGAP import OFormerFillGap
@@ -148,6 +149,8 @@ def get_model(cfg):
         model = OursIrregularModel(cfg)
     elif cfg.name == "Ours_lno":
         model = OursLNOModel(cfg)
+    elif cfg.name == "Ours_lno_score":
+        model = OursLNOScoreModel(cfg)
     else:
         raise NotImplementedError
     return model
@@ -205,6 +208,8 @@ class ModuleTemplate(pl.LightningModule):
 
         self.ntrain       = params_model.ntrain
         self.ntest        = params_model.ntest
+        self.patch_size   = params_model.patch_size
+        self.patch_num    = params_model.patch_num
         self.b_train_test = params_scheduler.b_train_test
 
         self.is_sync_dist = torch.cuda.device_count() > 1
@@ -549,7 +554,7 @@ class OursModule(ModuleTemplate):
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16]) # NS patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num) # NS patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task) 
         #agent_mask = mask_.clone()  # no agent mission
         pred_trajectory = []
@@ -564,8 +569,8 @@ class OursModule(ModuleTemplate):
                 torch.masked_select(pred, mask_.bool()).view(B, -1), 
                 torch.masked_select(y,    mask_.bool()).view(B, -1)
             )
-            #z1, z2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
-            #loss += self.surrogate_ratio * self.loss_surrogate(z1, z2)
+            z1, z2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
+            loss += self.surrogate_ratio * self.loss_surrogate(z1, z2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)

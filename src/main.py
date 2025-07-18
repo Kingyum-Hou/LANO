@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 import gc
 import requests
 import os
+from omegaconf import OmegaConf
 
 from omegaconf import DictConfig
 from hydra.utils import instantiate
@@ -44,7 +45,12 @@ def train(cfg: DictConfig) -> Optional[float]:
         if "_target_" in cfg_logger:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
     logger.watch(model, log="all")
+    logger.experiment.config.update(
+        OmegaConf.to_container(cfg, resolve=True),
+        allow_val_change=True
+    )
 
+    # Init profiler
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
     #trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger, strategy=DDPStrategy(find_unused_parameters=True))
     
@@ -63,7 +69,7 @@ def main(cfg: DictConfig) -> Optional[float]:
     testLoss_dict = train(cfg)
     requests.get(
         cfg.bark_url +
-        f"AAAI26_{cfg.datamodule.name}_{cfg.datamodule.task}_{cfg.datamodule.missing_rate}_{cfg.model.params_model.name}_{cfg.tag}/" +
+        f"AAAI26_{cfg.datamodule.params_data.name}_{cfg.datamodule.params_data.task}_{cfg.datamodule.params_data.missing_rate}_{cfg.model.params_model.name}_{cfg.tag}/" +
         f"full_loss={testLoss_dict['test/full_loss']:.4f}" +
         f"?sound={cfg.sound}"
     )

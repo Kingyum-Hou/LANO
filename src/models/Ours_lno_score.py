@@ -138,21 +138,20 @@ class PhCA_Encoder(nn.Module):
         super().__init__()
         self.head_size = hidden_size // heads_num
         self.heads_num = heads_num
-        self.attention_encoder = MLP(self.head_size, latent_num, latent_num, n_layers=0, act='gelu', res=False)
+        self.attention_encoder = MLP(self.head_size, self.head_size, latent_num, n_layers=0, act='gelu', res=False)
         self.temperature = Temperature(heads_num, temperature=0.5)
 
     def forward(self, y, no_valid):
         y = rearrange(y, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
         score_encode = self.attention_encoder(y)
         score_encode = self.temperature(score_encode)
         score_encode = torch.softmax(score_encode, dim=-1)
+        score_encode = score_encode.masked_fill(no_valid, 0.)
         z = torch.einsum("bhnl, bhnc -> bhlc", score_encode, y).contiguous()
         
-        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
-        score_encode = score_encode.masked_fill(no_valid, 0.)
         score_encode_norm = score_encode.sum(dim=2)
-        z = z / (score_encode_norm + 1e-6)[:, :, :, None]
-        z = rearrange(z, 'b h l c -> b l (h c)')
+        z = z / (score_encode_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
         return z, score_encode
     
 
@@ -164,7 +163,6 @@ class PhCA_Decoder(nn.Module):
         #self.attention_decoder = MLP(hidden_size, hidden_size, latent_num, n_layers=0, act='gelu', res=False)
 
     def forward(self, z, score):
-        z = rearrange(z, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
         y = torch.einsum("bhnl, bhlc -> bhnc", score, z)
         y = rearrange(y, 'b h n c -> b n (h c)')
         return y
@@ -201,18 +199,18 @@ class PhLP(nn.Module):
 
         # conjugate operator
         if self.token_Mixer == 'Attention':
-            z = rearrange(z, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
-            query, key, value = self.to_qkv(z).chunk(3, dim = -1)
+            z = rearrange(z, 'b h l c -> b l h c')
+            query, key, value = self.to_qkv(z).chunk(3, dim=-1)
             z = memory_efficient_attention(query, key, value)
-            z = rearrange(z, 'b f h c -> b f (h c)')
+            z = rearrange(z, 'b l h c -> b h l c')
         elif self.token_Mixer == 'MLP':
-            z = z.permute(0, 2, 1)
+            z = z.permute(0, 1, 3, 2)
             z = self.conjugate(z)
-            z = z.permute(0, 2, 1)
+            z = z.permute(0, 1, 3, 2)
         
         # calculate score
         score = rearrange(score, 'b h (H W) l -> b (h l) H W', H=self.space_size[0], W=self.space_size[1])
-        mask  = rearrange(mask, 'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1]).repeat(1, self.heads_num*self.latent_num, 1, 1)
+        mask  = rearrange(mask,  'b (H W) 1 -> b 1 H W', H=self.space_size[0], W=self.space_size[1]).repeat(1, self.heads_num*self.latent_num, 1, 1)
         next_score, next_mask = self.conv(score, mask)
         next_score = rearrange(next_score, 'b (h l) H W -> b h (H W) l', h=self.heads_num, l=self.latent_num)
         next_mask  = rearrange(next_mask, 'b c H W -> b (H W) c')[..., :1]
@@ -231,13 +229,15 @@ class KernelIntegrator(nn.Module):
         self.mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         
     def forward(self, y, mask):
+        # PhLP
         no_valid = mask == 0
         y_in = y.masked_fill(no_valid, 0.)
-
-        # PhLP
         y_in_, new_mask = self.phlp(self.ln_1(y_in), mask)
         y_out = y_in_ + y_in
+        
         # mlp
+        no_valid = new_mask == 0
+        y_out = y_out.masked_fill(no_valid, 0.)
         y_out = self.mlp(self.ln_2(y_out)) + y_out
         return y_out, new_mask
     
@@ -249,7 +249,7 @@ class KernelIntegrator(nn.Module):
         return z
 
 
-class OursLNOModel(nn.Module):
+class OursLNOScoreModel(nn.Module):
     def __init__(self, args):
         super().__init__()
         h = int((args.space_size[0] / args.downsample))
@@ -300,8 +300,6 @@ class OursLNOModel(nn.Module):
         y = self.featureExpander(y)
         z1 = self.kernelProcessor[0].get_middle_features(y, mask1)
         z2 = self.kernelProcessor[0].get_middle_features(y, mask2)
-        z1 = rearrange(z1, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
-        z2 = rearrange(z2, 'b l (h c) -> b h l c', h=self.heads_num, c=self.head_size)
         return z1, z2
 
     def forward(self, pos, x, mask):

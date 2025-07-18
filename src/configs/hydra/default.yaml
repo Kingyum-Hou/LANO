@@ -3,7 +3,7 @@ defaults:
   - override job_logging:   colorlog
 
 run:
-  dir: logs/${datamodule.name}/${model.params_model.name}_${datamodule.task}_${datamodule.missing_rate}_${tag}
+  dir: logs/${datamodule.params_data.name}/${model.params_model.name}_${datamodule.params_data.task}_${datamodule.params_data.missing_rate}_${tag}
 
 sweep:
   dir: logs/multiruns/${now:%Y-%m-%d}/${now:%H-%M-%S}

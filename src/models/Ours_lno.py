@@ -246,7 +246,7 @@ class PhLP(nn.Module):
         super().__init__()
         head_size = hidden_size // heads_num
         self.head_size   = head_size
-        self.head_num    = heads_num
+        self.heads_num    = heads_num
         self.token_Mixer = token_Mixer
 
         self.trunk_projector = MLP(64, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
@@ -269,12 +269,12 @@ class PhLP(nn.Module):
         # encoder
         no_valid = mask == 0
         x_in = x.masked_fill(no_valid, 0.)
-        #y = y.masked_fill(no_valid, 0.)
-        z = self.phca_encoder(x_in, y)
+        y_in = y.masked_fill(no_valid, 0.)
+        z = self.phca_encoder(x_in, y_in)
 
         # conjugate operator
         if self.token_Mixer == 'Attention':
-            z = rearrange(z, 'b f (h c) -> b f h c', h=self.head_num, c=self.head_size)
+            z = rearrange(z, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
             query, key, value = self.to_qkv(z).chunk(3, dim = -1)
             z = memory_efficient_attention(query, key, value)
             z = rearrange(z, 'b f h c -> b f (h c)')
@@ -288,8 +288,8 @@ class PhLP(nn.Module):
         new_mask = new_mask.permute(0, 2, 3, 1).reshape(B, 64*64, 1)
         new_no_valid = new_mask == 0
         x_out = x.masked_fill(new_no_valid, 0.)
-        y = self.phca_decoder(x_out, z)
-        return y, new_mask
+        y_out = self.phca_decoder(x_out, z)
+        return y_out, new_mask
     
 
 class KernelIntegrator(nn.Module):
@@ -310,6 +310,22 @@ class KernelIntegrator(nn.Module):
         # mlp
         y_out = self.mlp(self.ln_2(y_out)) + y_out
         return y_out, new_mask
+
+    def get_middle_features(self, pos, y, mask):
+        no_valid = mask == 0
+        y_in = y.masked_fill(no_valid, 0.)
+
+        y_in = self.ln_1(y_in)
+        B = y.shape[0]
+        x = self.phlp.trunk_projector(pos)
+
+        # encoder
+        x_in = x.masked_fill(no_valid, 0.)
+        y_in = y_in.masked_fill(no_valid, 0.)
+        # PhLP
+        z = self.phlp.phca_encoder(x_in, y_in)
+        z = rearrange(z, 'b l (h c) -> b h l c', h=self.phlp.heads_num, c=self.phlp.head_size)
+        return z
 
 
 class OursLNOModel(nn.Module):
@@ -355,11 +371,11 @@ class OursLNOModel(nn.Module):
     def get_psi(self, pos, x, mask1, mask2):
         if pos.dim()>3:
             pos = rearrange(pos, 'b ... c -> b (...) c')
-        z = torch.concat([pos, x], dim=-1)
-        z = self.featureExpander(z)
-        psi1 = self.kernelProcessor[0].get_psi(z, mask1)
-        psi2 = self.kernelProcessor[0].get_psi(z, mask2)
-        return psi1, psi2
+        y = torch.concat([pos, x], dim=-1)
+        y = self.featureExpander(y)
+        z1 = self.kernelProcessor[0].get_middle_features(pos, y, mask1)
+        z2 = self.kernelProcessor[0].get_middle_features(pos, y, mask2)
+        return z1, z2
 
     def forward(self, pos, x, mask):
         if pos.dim()>3:

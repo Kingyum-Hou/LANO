@@ -1,18 +1,18 @@
 name: OneCycleLR
-b_train_test: ${datamodule.b_train_test}
+b_train_test: ${datamodule.params_data.b_train_test}
 StepLR:
   step_size: 200
   gamma:     0.5
 OneCycleLR:
   max_lr:         ${optim.lr}
   epochs:     ${trainer.max_epochs}
-  num_train:  ${datamodule.n_train_test[0]}
+  num_train:  ${datamodule.params_data.n_train_test[0]}
   div_factor:
   pct_start:
   final_div_factor:
 CosineAnnealingLR:
   epochs:     ${trainer.max_epochs}
-  num_train:  ${datamodule.n_train_test[0]} 
+  num_train:  ${datamodule.params_data.n_train_test[0]} 
 milestones:
   epochs:        ${trainer.max_epochs}
   gamma:         0.5
