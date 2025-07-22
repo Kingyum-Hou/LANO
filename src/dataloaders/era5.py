@@ -42,8 +42,8 @@ def get_ERA5(
     ):
     H, W = space_size[0], space_size[1]
     # load_data
-    #ds = xr.open_dataset(data_dir)
-    #data = torch.tensor(np.array(ds["t"]))
+    ds = xr.open_dataset(data_dir)
+    data = torch.tensor(np.array(ds["t2m"]))
     h = int((H / downsample))
     w = int((W / downsample))
     #Tn = 7 * int(data.shape[0] / 7)

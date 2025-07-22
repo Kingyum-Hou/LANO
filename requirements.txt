@@ -11,3 +11,5 @@ xformers
 jupyter
 pytorch-cluster
 pytorch_scatter
+xarray
+timm
