@@ -463,7 +463,12 @@ def add_patch_missing(data:torch.Tensor, missing_rate:float, space_size:list, pa
     
     Note:
         The masking is performed independently for each sample in the batch.
+        If patch_size doesn't divide space_size evenly, consider using add_patch_missing_irregular instead.
     """
+    # 检查是否能够整除，如果不能则发出警告并使用irregular版本
+    if space_size[0] % patch_size != 0 or space_size[1] % patch_size != 0:
+        return add_patch_missing_irregular(data, missing_rate, space_size, patch_size)
+    
     patch_num = [space_size[0]//patch_size, space_size[1]//patch_size]
     total_patches = np.prod(patch_num)
     patch_holes_num = int(np.round(total_patches * missing_rate))
@@ -478,4 +483,67 @@ def add_patch_missing(data:torch.Tensor, missing_rate:float, space_size:list, pa
     
     valid_data = reshape2data(valid_data, patch_size, patch_num)
     valid_mask = reshape2data(valid_mask, patch_size, patch_num)
+    return valid_data, valid_mask
+
+
+def add_patch_missing_irregular(data: torch.Tensor, missing_rate: float, space_size: list, patch_size: int = 7) -> tuple:
+    """
+    Randomly masks patches in the input tensor to simulate missing data, handling cases where patch_size doesn't divide space_size evenly.
+    
+    Args:
+        data (torch.Tensor): Input tensor of shape (B, HW, T) where B is batch size, HW should equal space_size[0]*space_size[1].
+        missing_rate (float): Fraction of patches to be masked (set to zero).
+        space_size (list): Spatial dimensions of the input data, typically [H, W].
+        patch_size (int, optional): Size of each square patch. Default is 7.
+
+    Returns:
+        tuple:
+            - valid_data (torch.Tensor): Tensor with randomly masked patches set to zero, same shape as input.
+            - valid_mask (torch.Tensor): Binary mask tensor of the same shape as input, where 1 indicates valid (unmasked) data and 0 indicates masked (missing) patches.
+    
+    Note:
+        This function handles irregular patch divisions by using overlapping patches at boundaries.
+        For example, with space_size=[64, 64] and patch_size=7, it creates a 10x10 grid of patches 
+        where boundary patches may overlap to cover the entire space.
+    """
+    B, HW, T = data.shape
+    H, W = space_size
+    
+    # 计算patch网格大小，向上取整以覆盖整个空间
+    patch_num_h = (H + patch_size - 1) // patch_size  # 等价于 math.ceil(H / patch_size)
+    patch_num_w = (W + patch_size - 1) // patch_size  # 等价于 math.ceil(W / patch_size)
+    
+    total_patches = patch_num_h * patch_num_w
+    patch_holes_num = int(np.round(total_patches * missing_rate))
+    
+    # 将数据reshape为2D空间形式 [B, H, W, T]
+    data_2d = data.view(B, H, W, T)
+    valid_data = data_2d.clone()
+    valid_mask = torch.ones_like(valid_data)
+    
+    for batch_idx in range(B):
+        # 随机选择要mask的patch索引
+        patch_indices = torch.randperm(total_patches)[:patch_holes_num]
+        
+        for patch_idx in patch_indices:
+            # 将patch索引转换为2D坐标
+            patch_row = patch_idx // patch_num_w
+            patch_col = patch_idx % patch_num_w
+            
+            # 计算patch在原图中的位置
+            start_h = patch_row * patch_size
+            start_w = patch_col * patch_size
+            
+            # 确保patch不超出边界
+            end_h = min(start_h + patch_size, H)
+            end_w = min(start_w + patch_size, W)
+            
+            # 应用mask
+            valid_data[batch_idx, start_h:end_h, start_w:end_w, :] = 0.
+            valid_mask[batch_idx, start_h:end_h, start_w:end_w, :] = 0.
+    
+    # 将数据reshape回原始格式 [B, HW, T]
+    valid_data = valid_data.view(B, HW, T)
+    valid_mask = valid_mask.view(B, HW, T)
+    
     return valid_data, valid_mask

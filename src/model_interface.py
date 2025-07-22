@@ -21,7 +21,66 @@ import torch.nn.functional as F
 import math
 
 
-def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[16, 16]):
+def random_false_shared_irregular(mask: torch.tensor, missing_rate: float, space_size: list, patch_size: int = 7):
+    """
+    Creates additional random missing data by flipping mask values from True to False for irregular patch sizes.
+    Handles cases where patch_size doesn't divide space_size evenly.
+    
+    Args:
+        mask (torch.Tensor): Input mask tensor of shape (B, HW, T) where True indicates observed data.
+        missing_rate (float): Maximum fraction of observed patches to randomly flip to False.
+        space_size (list): Spatial dimensions [H, W].
+        patch_size (int): Size of each square patch.
+    
+    Returns:
+        torch.Tensor: Modified mask with additional random missing patches.
+    """
+    B, HW, T = mask.shape
+    H, W = space_size
+    
+    # 确保HW等于H*W
+    assert HW == H * W, f"HW ({HW}) should equal H*W ({H*W})"
+    
+    # 计算patch网格大小，向上取整以覆盖整个空间
+    patch_num_h = (H + patch_size - 1) // patch_size  # 等价于 math.ceil(H / patch_size)
+    patch_num_w = (W + patch_size - 1) // patch_size  # 等价于 math.ceil(W / patch_size)
+    
+    total_patches = patch_num_h * patch_num_w
+    
+    # 将mask reshape为2D空间形式 [B, H, W, T]
+    mask_2d = mask.view(B, H, W, T)
+    
+    for batch_idx in range(B):
+        # 随机选择要flip的patch数量
+        num_observed = total_patches * 0.75
+        num_to_flip = torch.randint(0,  int(num_observed*0.5), (1,)).item()
+        
+        # 随机选择要flip的patch
+        indices_to_flip = torch.randperm(total_patches)[:num_to_flip]
+
+        for patch_idx in indices_to_flip:
+            # 将patch索引转换为2D坐标
+            patch_row = patch_idx // patch_num_w
+            patch_col = patch_idx % patch_num_w
+            
+            # 计算patch在原图中的位置
+            start_h = patch_row * patch_size
+            start_w = patch_col * patch_size
+            
+            # 确保patch不超出边界
+            end_h = min(start_h + patch_size, H)
+            end_w = min(start_w + patch_size, W)
+            
+            # 将这个patch设为False
+            mask_2d[batch_idx, start_h:end_h, start_w:end_w, :] = False
+
+    # 将mask reshape回原始格式 [B, HW, T]
+    mask = mask_2d.view(B, HW, T)
+    
+    return mask
+
+
+def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[16, 16], space_size=[64, 64]):
     if "task2" in task:
         B, N, T = mask.shape
         mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
@@ -41,16 +100,20 @@ def random_false_shared(mask: torch.tensor, task: str, patch_size=4, patch_num=[
             indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]] 
             mask[b, indices_to_flip, :] = False
     elif "task4" in task:
-        B, N, T = mask.shape
-        mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
-        num_observed = len(torch.nonzero(mask_patch[0, :, 0, 0, 0], as_tuple=False))
-        #num_to_flip = int(num_observed*0.2)
-        num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
-        for b in range(B):
-            true_indices = torch.nonzero(mask_patch[b, :, 0, 0, 0], as_tuple=False).squeeze(1)
-            indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]
-            mask_patch[b, indices_to_flip, :, :, :] = False
-        mask = reshape2data(mask_patch, patch_size=patch_size, patch_num=patch_num)
+        # 检查是否能够整除，如果不能则使用irregular版本
+        if space_size[0] % patch_size != 0 or space_size[1] % patch_size != 0:
+            mask = random_false_shared_irregular(mask, 0.5, space_size, patch_size)
+        else:
+            B, N, T = mask.shape
+            mask_patch = reshape2blocks(mask, patch_size=patch_size, patch_num=patch_num)
+            num_observed = len(torch.nonzero(mask_patch[0, :, 0, 0, 0], as_tuple=False))
+            #num_to_flip = int(num_observed*0.2)
+            num_to_flip = torch.randint(0, int(num_observed*0.5), (1,)).item()
+            for b in range(B):
+                true_indices = torch.nonzero(mask_patch[b, :, 0, 0, 0], as_tuple=False).squeeze(1)
+                indices_to_flip = true_indices[torch.randperm(len(true_indices))[:num_to_flip]]
+                mask_patch[b, indices_to_flip, :, :, :] = False
+            mask = reshape2data(mask_patch, patch_size=patch_size, patch_num=patch_num)
     else:
         raise NotImplementedError
     
@@ -210,6 +273,7 @@ class ModuleTemplate(pl.LightningModule):
         self.ntest        = params_model.ntest
         self.patch_size   = params_model.patch_size
         self.patch_num    = params_model.patch_num
+        self.space_size   = params_model.get('space_size', [64, 64])  # 默认为64x64
         self.b_train_test = params_scheduler.b_train_test
 
         self.is_sync_dist = torch.cuda.device_count() > 1
@@ -316,7 +380,7 @@ class IPOTModule(ModuleTemplate):
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # NS patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36], space_size=self.space_size) # NS patch-wise
         x_had     = xx [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         pos_had   = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         pos_pred  = pos[0].clone()
@@ -442,7 +506,7 @@ class OFormerModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36])
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36], space_size=self.space_size)
         #agent_mask = random_false_shared(mask_.clone(), task)
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
@@ -495,7 +559,7 @@ class OFormerFGModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16])
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=4, patch_num=[16, 16], space_size=self.space_size)
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)
         agent_aPos = torch.cat([agent_a, agent_pos], dim=-1)
@@ -554,7 +618,7 @@ class OursModule(ModuleTemplate):
         mask_      = mask[..., 0].unsqueeze(dim=-1)
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num) # NS patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num, space_size=self.space_size) # NS patch-wise
         #agent_mask = random_false_shared(mask_.clone(), task) 
         #agent_mask = mask_.clone()  # no agent mission
         pred_trajectory = []

@@ -45,10 +45,10 @@ def train(cfg: DictConfig) -> Optional[float]:
         if "_target_" in cfg_logger:
             logger: pl.loggers.LightningLoggerBase = instantiate(cfg_logger)
     logger.watch(model, log="all")
-    logger.experiment.config.update(
-        OmegaConf.to_container(cfg, resolve=True),
-        allow_val_change=True
-    )
+    #logger.experiment.config.update(
+    #    OmegaConf.to_container(cfg, resolve=True),
+    #    allow_val_change=True
+    #)
 
     # Init profiler
     trainer = pl.Trainer(**cfg.trainer, callbacks=callbacks, logger=logger)
