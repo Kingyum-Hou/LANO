@@ -1,15 +1,18 @@
 _target_:     dataloaders.data_interface.ERA5_DataModule
-name:         ERA5
-#data_dir:     /data/jingren/repository/dataset/WeatherBench/era5_temperature.grib
-data_dir:     /data/jingren/repository/dataset/WeatherBench/2m_temperature_18-25.grib
-data_mask_dir: /data/jingren/repository/dataset/HadCRUT_5/1_to_10_netcdf/HadCRUT.5.0.2.0.anomalies.1.nc
-task:         task3
-missing_rate: 0.5
-n_train_test: [300, 50] # sst shape   (366, 901, 1001)
-b_train_test: [2, 2]
-num_workers:  2
-space_size:   [720, 1440]
-space_dim:    2
-T_all:        14
-downsample:   8
-ref:          ${model.params_model.ref}
+params_data:
+  name:         ERA5
+  #data_dir:     /data/jingren/repository/dataset/WeatherBench/era5_temperature.grib
+  data_dir:     /data/jingren/repository/dataset/WeatherBench/2m_temperature_18-25.grib
+  data_mask_dir: /data/jingren/repository/dataset/HadCRUT_5/1_to_10_netcdf/HadCRUT.5.0.2.0.anomalies.1.nc
+  task:         task3
+  missing_rate: 0.5
+  n_train_test: [300, 50] # sst shape   (366, 901, 1001)
+  b_train_test: [2, 2]
+  num_workers:  2
+  space_size:   [720, 1440]
+  space_dim:    2
+  T_all:        14
+  downsample:   8
+  patch_size:   3
+  patch_num:    [30, 60]
+  ref:          ${model.params_model.ref}
