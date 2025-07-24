@@ -37,23 +37,27 @@ def add_patch_missing(data, missing_rate, space_size, patch_size=4):
 
 
 def get_ERA5(
-        name, data_dir, data_mask_dir, num_train, num_test, space_size,
+        name, data_dir, np_data_dir, data_mask_dir, num_train, num_test, space_size,
         task, T_all, missing_rate, ref, downsample
     ):
     H, W = space_size[0], space_size[1]
     # load_data
-    ds = xr.open_dataset(data_dir)
-    data = torch.tensor(np.array(ds["t2m"]))
     h = int((H / downsample))
     w = int((W / downsample))
-    #Tn = 7 * int(data.shape[0] / 7)
-    data = data[:, :720, :]
-    data = data[:, ::downsample, ::downsample]
+    if np_data_dir is not None:
+        data = np.load(np_data_dir)
+        data = torch.tensor(data, dtype=torch.float32)
+    else:
+        ds = xr.open_dataset(data_dir)
+        data = torch.tensor(np.array(ds["t2m"]))
+        #Tn = 7 * int(data.shape[0] / 7)
+        data = data[:, :720, :]
+        data = data[:, ::downsample, ::downsample]
+        data_list = []
+        for i in range(0, data.shape[0]-14, 7):
+            data_list.append(data[i:i+14, ...])
+        data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1)
     data = (data - 273.15) / 30.
-    data_list = []
-    for i in range(0, data.shape[0]-14, 7):
-        data_list.append(data[i:i+14, ...])
-    data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1)
 
     # train & test
     train_xy = data[:num_train, ...].reshape(num_train, -1, 14)

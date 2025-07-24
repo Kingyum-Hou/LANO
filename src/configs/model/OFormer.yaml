@@ -11,9 +11,16 @@ params_model:
   out_step: 1
   propagator_depth: 1
   fourier_frequency: 8
-  ntrain: ${datamodule.n_train_test[0]}
-  ntest: ${datamodule.n_train_test[1]}
+  ntrain: ${datamodule.params_data.n_train_test[0]}
+  ntest: ${datamodule.params_data.n_train_test[1]}
   ref: 8
   monitor: train/full_loss
+  patch_size: ${datamodule.params_data.patch_size}
+  patch_num: ${datamodule.params_data.patch_num}
+  space_size: ${datamodule.params_data.space_size}
+  downsample: ${datamodule.params_data.downsample}
+  hidden_size: ${model.params_model.encoder_emb_dim}
+  latent_num: ${model.params_model.out_seq_emb_dim}
+  token_Mixer:
 params_optim: ${optim}
 params_scheduler: ${scheduler}

@@ -506,7 +506,7 @@ class OFormerModule(ModuleTemplate):
 
         # agent mission
         mask_      = mask[..., 0].unsqueeze(dim=-1)
-        agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36], space_size=self.space_size)
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num, space_size=self.space_size)
         #agent_mask = random_false_shared(mask_.clone(), task)
         agent_a    = a  [agent_mask.repeat(1, 1, Ti).bool()].reshape(B, -1, Ti)
         agent_pos  = pos[agent_mask.repeat(1, 1,  2).bool()].reshape(B, -1,  2)

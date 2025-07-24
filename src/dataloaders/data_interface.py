@@ -51,6 +51,7 @@ class ERA5_DataModule(pl.LightningDataModule):
         super().__init__()
         self.name         = params_data.name
         self.data_dir     = params_data.data_dir
+        self.np_data_dir  = params_data.np_data_dir
         self.data_mask_dir= params_data.data_mask_dir
         self.task         = params_data.task
         self.missing_rate = params_data.missing_rate
@@ -63,7 +64,7 @@ class ERA5_DataModule(pl.LightningDataModule):
         self.downsample   = params_data.downsample
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data, test_data_high = get_ERA5(self.name, self.data_dir, self.data_mask_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
+        train_data, test_data, test_data_high = get_ERA5(self.name, self.data_dir, self.np_data_dir, self.data_mask_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
         self.train_data = ERA5Dataset(*train_data, self.task)
         self.valid_data = ERA5Dataset(*test_data,  self.task)
         self.test_data  = ERA5Dataset4test(test_data, test_data_high, self.task)
