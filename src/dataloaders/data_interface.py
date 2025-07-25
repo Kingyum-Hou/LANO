@@ -127,33 +127,19 @@ class SWE_DataModule(pl.LightningDataModule):
 
 
 class DIFFUSION_DataModule(pl.LightningDataModule):
-    def __init__(
-        self,
-        name: str,           
-        data_dir: str,    
-        task: str           = "task3",
-        missing_rate: float = 0.,
-        n_train_test: list  = [1000, 100],
-        b_train_test: list  = [16, 16],
-        num_workers: int    = 4,
-        space_size: list    = [64, 64],
-        space_dim: int      = 2,
-        T_all: int          = 20,
-        downsample: int     = 1,
-        ref: int            = 64,
-    ):
+    def __init__(self, params_data: DictConfig):
         super().__init__()
-        self.name         = name
-        self.data_dir     = data_dir
-        self.task         = task
-        self.missing_rate = missing_rate
-        self.n_train, self.n_test = n_train_test
-        self.b_train, self.b_test = b_train_test
-        self.num_workers  = num_workers
-        self.T_all        = T_all
-        self.ref          = ref
-        self.space_size   = space_size
-        self.downsample   = downsample
+        self.name         = params_data.name
+        self.data_dir     = params_data.data_dir
+        self.task         = params_data.task
+        self.missing_rate = params_data.missing_rate
+        self.n_train, self.n_test = params_data.n_train_test
+        self.b_train, self.b_test = params_data.b_train_test
+        self.num_workers  = params_data.num_workers
+        self.T_all        = params_data.T_all
+        self.ref          = params_data.ref
+        self.space_size   = params_data.space_size
+        self.downsample   = params_data.downsample
 
     def setup(self, stage: Optional[str]=None):
         train_data, test_data, test_data_high = get_DIFFUSION(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
