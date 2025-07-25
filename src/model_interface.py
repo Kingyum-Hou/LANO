@@ -629,19 +629,35 @@ class OursModule(ModuleTemplate):
         for t in range(0, curriculum_steps):
             y     = yy[..., t:t+1]
             pred  = self.model(pos_ref, xx, agent_mask)
-            loss += self.criterion(
-                torch.masked_select(pred, mask_.bool()).view(B, -1), 
-                torch.masked_select(y,    mask_.bool()).view(B, -1)
-            )
+            if self.patch_size == 5:
+                pred_ = torch.masked_select(pred, mask_.bool())
+                y_    = torch.masked_select(y,    mask_.bool())
+                if pred_.numel() % 2 == 1:
+                    pred_ = torch.cat([pred_, torch.zeros(1, device=pred_.device, dtype=pred_.dtype)])
+                    y_    = torch.cat([y_,    torch.zeros(1, device=y_.device,   dtype=y_.dtype)])
+                loss += self.criterion(pred_.view(B, -1), y_.view(B, -1))    
+            else:
+                loss += self.criterion(
+                    torch.masked_select(pred, mask_.bool()).view(B, -1), 
+                    torch.masked_select(y,    mask_.bool()).view(B, -1)
+                )
             z1, z2 = self.model.get_psi(pos_ref, xx, agent_mask, mask_)
             loss += self.surrogate_ratio * self.loss_surrogate(z1, z2)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], y], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
-        full_loss = self.criterion(
-            torch.masked_select(pred, mask_.bool()).view(B, -1), 
-            torch.masked_select(yy,   mask_.bool()).view(B, -1)
-        )
+        if self.patch_size == 5:
+            pred = torch.masked_select(pred, mask_.bool())
+            yy   = torch.masked_select(yy,   mask_.bool())
+            if pred.numel() % 2 == 1:
+                pred = torch.cat([pred, torch.zeros(1, device=pred.device, dtype=pred.dtype)])
+                yy   = torch.cat([yy,   torch.zeros(1, device=yy.device, dtype=yy.dtype)])
+            full_loss = self.criterion(pred.view(B, -1), yy.view(B, -1))
+        else:    
+            full_loss = self.criterion(
+                torch.masked_select(pred, mask_.bool()).view(B, -1), 
+                torch.masked_select(yy,   mask_.bool()).view(B, -1)
+            )
         #check_model_parameters_isnan(self.model)
         return full_loss, loss
     
