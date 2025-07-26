@@ -8,13 +8,12 @@ from einops import rearrange
 
 from models.IPOT import EncoderProcessorDecoder as IPOT, IPOTBasicPreprocessor, IPOTEncoder, IPOTProcessor, IPOTDecoder
 from models.FNO import FNO2d
-from models.Ours import OursModel
-from models.Ours_irregular import OursIrregularModel
-from models.Ours_lno import OursLNOModel
-from models.Ours_lno_score import OursLNOScoreModel
+from models.Ours_old import OursModel
+from models.Ours_S import OursLNOModel
+from models.Ours import OursLNOScoreModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
-from models.OFORMER_FILLGAP import OFormerFillGap
+from models.LNO import LNO_triple
 from tools import LpLoss, masked_loss_average, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
@@ -190,30 +189,26 @@ def get_model(cfg):
         model = MIONet(sizes, cfg.activation, cfg.initializer)
     elif cfg.name == "OFormer":
         model = OFormer(cfg)
-    elif cfg.name == "OFormer_fillgap":
-        model = OFormerFillGap(
-            cfg.in_channels,
-            cfg.encoder_emb_dim,
-            cfg.out_seq_emb_dim,
-            cfg.encoder_heads,
-            cfg.encoder_depth,
-            cfg.decoder_emb_dim,
-            cfg.out_channels,
-            cfg.out_step,
-            cfg.propagator_depth,
-            cfg.fourier_frequency,
-            is_fillGap=cfg.is_fillGap,
-            scale_factor=cfg.scale_factor,
-            r=cfg.r_size,
+    elif cfg.name == "LNO":
+        model = LNO_triple(
+            n_block=cfg.n_block,
+            n_mode=cfg.n_mode,
+            n_dim=cfg.n_dim,
+            n_head=cfg.n_head,
+            n_layer=cfg.n_layer,
+            x_dim=cfg.x_dim,
+            y1_dim=cfg.y1_dim,
+            y2_dim=cfg.y2_dim,
+            attn=cfg.attn,
+            act=cfg.act,
+            model_attr=cfg.model_attr
         )
+    elif cfg.name == "Ours_old":
+        model = OursModel(cfg)    
     elif cfg.name == "Ours":
-        model = OursModel(cfg)
-    elif cfg.name == "Ours_irregular":
-        model = OursIrregularModel(cfg)
-    elif cfg.name == "Ours_lno":
-        model = OursLNOModel(cfg)
-    elif cfg.name == "Ours_lno_score":
         model = OursLNOScoreModel(cfg)
+    elif cfg.name == "Ours_S":
+        model = OursLNOModel(cfg)
     else:
         raise NotImplementedError
     return model
@@ -676,3 +671,62 @@ class OursModule(ModuleTemplate):
         full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
         return full_loss
 
+
+class LNOModule(ModuleTemplate):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__(params_model, params_optim, params_scheduler)
+        self.alpha = params_model.alpha
+        self.t     = params_model.t
+
+    def step(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW,Ti = xx.shape
+        _, _, To = yy.shape
+
+        # agent mission
+        mask_      = mask[..., 0].unsqueeze(dim=-1)
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num, space_size=self.space_size) # NS patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task) 
+        #agent_mask = mask_.clone()  # no agent mission
+        pos_input = torch.masked_select(pos, agent_mask.bool()).reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        pred_trajectory = []
+        loss = 0.
+
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        for t in range(0, curriculum_steps):
+            y     = yy[..., t:t+1]
+            xx_ = torch.masked_select(xx, agent_mask.bool()).reshape(B, -1, Ti)
+            pred  = self.model(pos_input, pos_output, xx_)
+            loss += self.criterion(
+                torch.masked_select(pred, mask_.bool()).view(B, -1), 
+                torch.masked_select(y,    mask_.bool()).view(B, -1)
+            )
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(
+            torch.masked_select(pred, mask_.bool()).view(B, -1), 
+            torch.masked_select(yy,   mask_.bool()).view(B, -1)
+        )
+        return full_loss, loss
+    
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _,  _, To = yy.shape
+        pos_input = torch.masked_select(pos, mask[..., :2].bool()).reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        pred_trajectory = []
+        for t in range(0, To):
+            y    = yy[..., t:t+1]
+            xx_ = torch.masked_select(xx, mask[..., :Ti].bool()).reshape(B, -1, Ti)
+            pred = self.model(pos_input, pos_output, xx_)
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss

@@ -1,0 +1,27 @@
+_target_: model_interface.OursModule
+params_model:
+  name: Ours_S
+  input_size: 10
+  output_size: 1
+  ntrain: ${datamodule.params_data.n_train_test[0]}
+  ntest:  ${datamodule.params_data.n_train_test[1]}
+  scale_factor: 2.
+  space_size: ${datamodule.params_data.space_size}
+  ref: 8
+  hidden_size: 256
+  head_size: 32
+  heads_num: 8
+  kernel_layers: 8
+  latent_num: 256
+  alpha: 1e-5
+  t: 10
+  downsample: ${datamodule.params_data.downsample}
+  monitor: train/full_loss
+  surrogate_ratio: 0.1
+  token_Mixer: Attention
+  patch_size: ${datamodule.params_data.patch_size}
+  patch_num: ${datamodule.params_data.patch_num}
+
+params_optim: ${optim}
+
+params_scheduler: ${scheduler}

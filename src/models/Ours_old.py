@@ -179,72 +179,90 @@ class Temperature(nn.Module):
 
     def forward(self, x):
         return x / self.temperature
-    
-
-class Empty(nn.Module):
-    def __init__(self):
-        super().__init__()
-    
-    def build(self, mask):
-        self.mask = mask
-
-    def forward(self, x):
-        x.masked_fill(self.mask, 0.)
-        return x
 
 
 class KernelIntegrator(nn.Module):
-    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size):
+    def __init__(self, hidden_size, feature_basis_num, heads_num, space_size, token_Mixer='Attention'):
         super().__init__()
         head_size = hidden_size // heads_num
+        self.token_Mixer = token_Mixer
         self.ln_1 = nn.LayerNorm(hidden_size)
         self.ln_2 = nn.LayerNorm(hidden_size)
-        
-        self.to_qkv = nn.Linear(hidden_size, hidden_size*3, bias=False)
-        #self.conjugate = MLP(feature_basis_num, feature_basis_num*2, feature_basis_num, n_layers=0, act='gelu')
-        
-        self.fnn  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
+        self.feature_basis_projector = nn.Sequential(
+            MLP(head_size, head_size, feature_basis_num, n_layers=0, act='gelu', res=False),
+            Temperature(heads_num, temperature=0.5),
+            nn.Softmax(dim=-1),
+        )
+        if token_Mixer == 'Attention':
+            self.to_qkv = nn.Linear(head_size, head_size*3, bias=False)
+        if token_Mixer == 'MLP':
+            #self.conjugate = MLP(head_size, hidden_size, head_size, n_layers=0, act='gelu')
+            self.conjugate = MLP(feature_basis_num, feature_basis_num*2, feature_basis_num, n_layers=0, act='gelu')
+        self.to_out = nn.Linear(hidden_size, hidden_size)
+        self.conv = PartialConv(heads_num*feature_basis_num, heads_num*feature_basis_num, 3, padding=1)
+        self.last_mlp  = MLP(hidden_size, hidden_size, hidden_size, n_layers=0, act='gelu', res=False)
         self.feature_basis_num = feature_basis_num
         self.heads_num = heads_num
         self.head_size = head_size
         self.space_size = space_size
 
-    def forward(self, x):
-        """
-            conjugate operator
-        """
-        # multihead attention
-        query, key, value = self.to_qkv(self.ln_1(x)).chunk(3, dim = -1)
-        query = rearrange(query, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
-        key   = rearrange(key,   'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
-        value = rearrange(value, 'b f (h c) -> b f h c', h=self.heads_num, c=self.head_size)
-        attn_out = memory_efficient_attention(query, key, value)
-        attn_out = rearrange(attn_out, 'b f h c -> b f (h c)')
-        x     = x + attn_out
-        """
-        psi = psi.permute(0, 1, 3, 2)
-        psi = self.conjugate(psi)
-        psi = psi.permute(0, 1, 3, 2)
-        """
-        # fnn
-        x = x + self.fnn(self.ln_2(x))
-        return x
+    def compute_feature_map(self, x, no_valid):
+        x = rearrange(x, 'b n (h c) -> b h n c', c=self.head_size, h=self.heads_num)
+        feature_basis = self.feature_basis_projector(x)
+        psi = torch.einsum("b h n c, b h n f -> b h f c", x, feature_basis).contiguous()
+        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
+        feature_basis = feature_basis.masked_fill(no_valid, 0.)
+        feature_basis_norm = feature_basis.sum(dim=2)
+        psi = psi / (feature_basis_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
+        return psi, feature_basis
 
+    def map_back_to_originalSpace(self, feature_basis, mask, psi):
+        H = self.space_size[0]
+        W = self.space_size[1]
+        feature_basis_new = rearrange(feature_basis, 'b h (H W) F -> b (h F) H W', H=H, W=W)
+        mask_new          = rearrange(mask,          'b (H W) 1   -> b 1 H W', H=H, W=W) 
+        mask_new = mask_new.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
+        feature_basis_new, mask_new = self.conv(feature_basis_new, mask_new)
+        feature_basis_new = rearrange(feature_basis_new, 'b (h F) H W -> b h (H W) F', h=self.heads_num, F=self.feature_basis_num)
+        mask_new          = rearrange(mask_new, 'b c H W -> b (H W) c')[..., :1]
+        x = torch.einsum("b h f c, b h n f -> b h n c", psi, feature_basis_new)
+        x = rearrange(x, 'b h n c -> b n (h c)')
+        return x, mask_new
 
-class Interp(nn.Module):
-    def __init__(self, feature_basis_num, layers_num):
-        super().__init__()
-        self.convs = []
-        for _ in range(layers_num):
-            self.convs.append(
-                PartialConv(feature_basis_num, feature_basis_num, 3, padding=1)
-            )
-        self.convs = nn.ModuleList(self.convs)
+    def get_psi(self, x, mask):
+        no_valid = mask == 0
+        x = x.masked_fill(no_valid, 0.)
+        
+        # compute feature map
+        psi, _ = self.compute_feature_map(self.ln_1(x), no_valid)
+        return psi
 
     def forward(self, x, mask):
-        for _, conv in enumerate(self.convs):
-            x, mask = conv(x, mask)
-        return x, mask
+        no_valid = mask == 0
+        x = x.masked_fill(no_valid, 0.)
+        
+        # compute feature map
+        psi, feature_basis = self.compute_feature_map(self.ln_1(x), no_valid)
+
+        # conjugate operator
+        if self.token_Mixer == 'Attention':
+            psi = rearrange(psi, 'b h f c -> b f h c')
+            query, key, value = self.to_qkv(psi).chunk(3, dim = -1)
+            psi = memory_efficient_attention(query, key, value)
+            psi = rearrange(psi, 'b f h c -> b h f c')
+        elif self.token_Mixer == 'MLP':
+            psi = psi.permute(0, 1, 3, 2)
+            psi = self.conjugate(psi)
+            psi = psi.permute(0, 1, 3, 2)
+        
+        # map back to original space
+        x_new, mask_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
+        x_new = self.to_out(x_new)
+
+        # mlp
+        x = x + x_new
+        x = self.last_mlp(self.ln_2(x)) + x
+        return x, mask_new
 
 
 class OursModel(nn.Module):
@@ -256,19 +274,6 @@ class OursModel(nn.Module):
             args.hidden_size * 2, args.hidden_size, 
             n_layers=0, act='gelu', res=False
         )
-        self.head_size  = args.hidden_size // args.heads_num
-        self.heads_num  = args.heads_num
-        self.space_size = args.space_size
-        self.downsample = args.downsample
-        self.hidden_size = args.hidden_size
-        self.feature_basis_num = args.feature_basis_num
-        self.ln   = nn.LayerNorm(args.hidden_size)
-        self.feature_basis_projector = nn.Sequential(
-            MLP(args.head_size, args.head_size, args.feature_basis_num, n_layers=0, act='gelu', res=False),
-            Temperature(args.heads_num, temperature=0.5),
-            Empty(),
-            nn.Softmax(dim=-1),
-        )
         self.kernelProcessor = []
         h = int((args.space_size[0] / args.downsample))
         w = int((args.space_size[1] / args.downsample))
@@ -276,14 +281,13 @@ class OursModel(nn.Module):
             self.kernelProcessor.append(
                 KernelIntegrator(
                     args.hidden_size, 
-                    args.feature_basis_num, 
+                    args.latent_num, 
                     args.heads_num,
                     space_size=[h, w],
+                    token_Mixer=args.token_Mixer
                 )
             )
         self.kernelProcessor = nn.ModuleList(self.kernelProcessor)
-        self.interp = Interp(args.feature_basis_num*args.heads_num, 4)
-        self.to_out = nn.Linear(args.hidden_size, args.hidden_size)
         self.projector = nn.Sequential(
             nn.LayerNorm(args.hidden_size), 
             nn.Linear(args.hidden_size, args.output_size)
@@ -307,38 +311,9 @@ class OursModel(nn.Module):
             pos = rearrange(pos, 'b ... c -> b (...) c')
         z = torch.concat([pos, x], dim=-1)
         z = self.featureExpander(z)
-
-        # dynamic-static split for mask1 & mask2
-        no_valid1 = mask1 == 0
-        no_valid2 = mask2 == 0
-        z1 = z.masked_fill(no_valid1, 0.)
-        z2 = z.masked_fill(no_valid2, 0.)
-        psi1, _ = self.compute_feature_map(z1, no_valid1)
-        psi2, _ = self.compute_feature_map(z2, no_valid2)
+        psi1 = self.kernelProcessor[0].get_psi(z, mask1)
+        psi2 = self.kernelProcessor[0].get_psi(z, mask2)
         return psi1, psi2
-    
-    def compute_feature_map(self, x, no_valid):
-        no_valid = rearrange(no_valid, 'b n (1 1) -> b 1 n 1')
-        self.feature_basis_projector[2].build(no_valid)
-        x = rearrange(x, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
-        feature_basis = self.feature_basis_projector(x)
-        psi = torch.einsum("b h n c, b h n f -> b h f c", x, feature_basis).contiguous()
-        feature_basis = feature_basis.masked_fill(no_valid, 0.)
-        feature_basis_norm = feature_basis.sum(dim=2)
-        psi = psi / (feature_basis_norm + 1e-6)[:, :, :, None].repeat(1, 1, 1, self.head_size)
-        return psi, feature_basis
-
-    def map_back_to_originalSpace(self, feature_basis, mask, psi):
-        H = self.space_size[0] // self.downsample
-        W = self.space_size[1] // self.downsample
-        feature_basis_new = rearrange(feature_basis, 'b h (H W) f -> b (h f) H W', H=H, W=W)
-        mask              = rearrange(mask,          'b (H W) 1 -> b 1 H W', H=H, W=W) 
-        mask              = mask.repeat(1, self.heads_num*self.feature_basis_num, 1, 1)
-        feature_basis_new, _ = self.interp(feature_basis_new, mask)
-        feature_basis_new = rearrange(feature_basis_new, 'b (h f) H W -> b h (H W) f', h=self.heads_num, f=self.feature_basis_num)
-        x = torch.einsum("b h f c, b h n f -> b h n c", psi, feature_basis_new)
-        x = rearrange(x, 'b h n c -> b n (h c)')
-        return x
 
     def forward(self, pos, x, mask):
         if pos.dim()>3:
@@ -346,22 +321,8 @@ class OursModel(nn.Module):
         z = torch.concat([pos, x], dim=-1)
         z = self.featureExpander(z)
 
-        # dynamic-static split
-        no_valid = mask == 0
-        z = z.masked_fill(no_valid, 0.)
-        #psi, feature_basis = self.compute_feature_map(z, no_valid)
-        psi, feature_basis = self.compute_feature_map(self.ln(z), no_valid)
-
-        # token mixing
-        psi = rearrange(psi, 'b h n c -> b n (h c)', h=self.heads_num, c=self.head_size)
         for _, block in enumerate(self.kernelProcessor):
-            psi = block(psi)
-
-        # dynamic-static recovery
-        psi = rearrange(psi, 'b n (h c) -> b h n c', h=self.heads_num, c=self.head_size)
-        z_new = self.map_back_to_originalSpace(feature_basis, mask, psi)
-        z_new = self.to_out(z_new)
-        z     = z + z_new 
-
+            z, mask = block(z, mask)
+    
         y  = self.projector(z)
         return y
