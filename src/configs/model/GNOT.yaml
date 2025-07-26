@@ -1,0 +1,36 @@
+_target_: model_interface.GNOTModule
+params_model:
+  name: GNOT
+  unified_pos: 0
+  geotype: "structured_2D"
+  shapelist:
+  gnot_ref: 8
+  n_hidden: 128
+  n_layers: 3
+  act: "gelu"
+  fun_dim: 10
+  time_input: false
+  space_dim: 2
+  n_heads: 8
+  dropout: 0.0
+  mlp_ratio: 2
+  out_dim: 1
+  hidden_size: 
+  latent_num:
+  token_Mixer:
+  ntrain: ${datamodule.params_data.n_train_test[0]}
+  ntest:  ${datamodule.params_data.n_train_test[1]}
+  scale_factor: 2.
+  space_size: ${datamodule.params_data.space_size}
+  ref: 8
+  alpha: 1e-5
+  t: 10
+  downsample: ${datamodule.params_data.downsample}
+  monitor: train/full_loss
+  surrogate_ratio: 0.1
+  patch_size: ${datamodule.params_data.patch_size}
+  patch_num: ${datamodule.params_data.patch_num}
+
+params_optim: ${optim}
+
+params_scheduler: ${scheduler}

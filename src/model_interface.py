@@ -14,6 +14,7 @@ from models.Ours import OursLNOScoreModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
 from models.LNO import LNO_triple
+from models.GNOT import Model as GNOT
 from tools import LpLoss, masked_loss_average, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
 from torch.optim.lr_scheduler import StepLR, OneCycleLR, CosineAnnealingLR, MultiStepLR
 import torch.nn.functional as F
@@ -203,6 +204,8 @@ def get_model(cfg):
             act=cfg.act,
             model_attr=cfg.model_attr
         )
+    elif cfg.name == "GNOT":
+        model = GNOT(cfg)
     elif cfg.name == "Ours_old":
         model = OursModel(cfg)    
     elif cfg.name == "Ours":
@@ -665,6 +668,66 @@ class OursModule(ModuleTemplate):
         for t in range(0, To):
             y    = yy[..., t:t+1]
             pred = self.model(pos_ref, xx, mask[..., :1])
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss
+
+
+class GNOTModule(ModuleTemplate):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__(params_model, params_optim, params_scheduler)
+        self.alpha = params_model.alpha
+        self.t     = params_model.t
+
+    def step(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW,Ti = xx.shape
+        _, _, To = yy.shape
+
+        # agent mission
+        mask_      = mask[..., 0].unsqueeze(dim=-1)
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=3, patch_num=[30, 60]) # ERA5 patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task, patch_size=2, patch_num=[18, 36]) # ERA5 patch-wise
+        agent_mask = random_false_shared(mask_.clone(), task, patch_size=self.patch_size, patch_num=self.patch_num, space_size=self.space_size) # NS patch-wise
+        #agent_mask = random_false_shared(mask_.clone(), task) 
+        #agent_mask = mask_.clone()  # no agent mission
+        pos_input = torch.masked_select(pos, agent_mask.bool()).reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        pred_trajectory = []
+        loss = 0.
+
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        for t in range(0, curriculum_steps):
+            y     = yy[..., t:t+1]
+            xx_ = torch.masked_select(xx, agent_mask.bool()).reshape(B, -1, Ti)
+            pred  = self.model(pos_output, xx_, pos_input)
+            loss += self.criterion(
+                torch.masked_select(pred, mask_.bool()).view(B, -1), 
+                torch.masked_select(y,    mask_.bool()).view(B, -1)
+            )
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(
+            torch.masked_select(pred, mask_.bool()).view(B, -1), 
+            torch.masked_select(yy,   mask_.bool()).view(B, -1)
+        )
+        return full_loss, loss
+    
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _,  _, To = yy.shape
+        pos_input = torch.masked_select(pos, mask[..., :2].bool()).reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        pred_trajectory = []
+        for t in range(0, To):
+            y    = yy[..., t:t+1]
+            xx_ = torch.masked_select(xx, mask[..., :Ti].bool()).reshape(B, -1, Ti)
+            pred = self.model(pos_output, xx_, pos_input)
             pred_trajectory.append(pred)
             xx = torch.cat([xx[..., 1:], pred], dim=-1)
         pred = torch.cat(pred_trajectory, dim=-1)
