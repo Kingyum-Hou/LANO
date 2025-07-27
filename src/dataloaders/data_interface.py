@@ -131,6 +131,7 @@ class DIFFUSION_DataModule(pl.LightningDataModule):
         super().__init__()
         self.name         = params_data.name
         self.data_dir     = params_data.data_dir
+        self.np_data_dir  = params_data.np_data_dir
         self.task         = params_data.task
         self.missing_rate = params_data.missing_rate
         self.n_train, self.n_test = params_data.n_train_test
@@ -142,7 +143,7 @@ class DIFFUSION_DataModule(pl.LightningDataModule):
         self.downsample   = params_data.downsample
 
     def setup(self, stage: Optional[str]=None):
-        train_data, test_data, test_data_high = get_DIFFUSION(self.name, self.data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
+        train_data, test_data, test_data_high = get_DIFFUSION(self.name, self.data_dir, self.np_data_dir, self.n_train, self.n_test, self.space_size, self.task, self.T_all, self.missing_rate, self.ref, self.downsample)
         self.train_data = DIFFUSIONDataset(*train_data, self.task)
         self.valid_data = DIFFUSIONDataset(*test_data,  self.task)
         self.test_data  = DIFFUSIONDataset4test(test_data, test_data_high, self.task)

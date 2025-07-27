@@ -9,25 +9,32 @@ from scipy import io as scio
 
 
 def get_DIFFUSION(
-        name, data_dir, num_train, num_test, space_size,
+        name, data_dir, np_data_dir, num_train, num_test, space_size,
         task, T_all, missing_rate, ref, downsample
     ):
     # load data
     H, W = space_size[0], space_size[1]
-    with h5py.File(data_dir, 'r') as f:
-        keys = list(f.keys())
-        keys.sort()
-        data_arrays = [
-            np.array(f[key]["data"], dtype=np.float32) for key in keys
-        ]
-        _data = torch.from_numpy(
-            np.stack(data_arrays, axis=0)
-        )  # [B, nt, nx, ny, nc]
-        B, T, H, W, C = _data.shape
-        _data = _data[..., 0].permute(0, 2, 3, 1).reshape(B, H, W, T)  # for activator
-        _data = _data[..., 50:]
-        train_xy = _data[:num_train, ::downsample, ::downsample, ::2][..., :T_all]
-        test_xy  = _data[-num_test:, ::downsample, ::downsample, ::2][..., :T_all]
+    if np_data_dir is not None:
+        _data = np.load(np_data_dir)
+        _data = torch.tensor(_data, dtype=torch.float32)
+        B, T, H, W, C = 1000, 101, 128, 128, 2
+        train_xy = _data[:num_train]
+        test_xy  = _data[-num_test:]
+    else:
+        with h5py.File(data_dir, 'r') as f:
+            keys = list(f.keys())
+            keys.sort()
+            data_arrays = [
+                np.array(f[key]["data"], dtype=np.float32) for key in keys
+            ]
+            _data = torch.from_numpy(
+                np.stack(data_arrays, axis=0)
+            )  # [B, nt, nx, ny, nc]
+            B, T, H, W, C = _data.shape
+            _data = _data[..., 0].permute(0, 2, 3, 1).reshape(B, H, W, T)  # for activator
+            _data = _data[..., 50:]
+            train_xy = _data[:num_train, ::downsample, ::downsample, ::2][..., :T_all]
+            test_xy  = _data[-num_test:, ::downsample, ::downsample, ::2][..., :T_all]
     train_xy = train_xy.reshape(num_train, -1, T_all)
     test_xy  = test_xy. reshape(num_test,  -1, T_all)
     H, W = int(H//downsample), int(W//downsample)
