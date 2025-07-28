@@ -828,3 +828,47 @@ class LNOModule(ModuleTemplate):
         pred = torch.cat(pred_trajectory, dim=-1)
         full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
         return full_loss
+
+class LNOInterpModule(ModuleTemplate):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__(params_model, params_optim, params_scheduler)
+        self.alpha = params_model.alpha
+        self.t     = params_model.t
+
+    def step(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW,Ti = xx.shape
+        _, _, To = yy.shape
+        pos_input = pos.reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        
+        pred_trajectory = []
+        loss = 0.
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        for t in range(0, curriculum_steps):
+            y     = yy[..., t:t+1]
+            pred  = self.model(pos_input, pos_output, xx)
+            loss += self.criterion(pred.view(B, -1), y.view(B, -1))
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.view(B, -1), yy.view(B, -1))
+        return full_loss, loss
+    
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _,  _, To = yy.shape
+        pos_input  = pos.reshape(B, -1, 2)
+        pos_output = pos.reshape(B, -1, 2)
+        
+        pred_trajectory = []
+        for t in range(0, To):
+            y    = yy[..., t:t+1]
+            pred = self.model(pos_input, pos_output, xx)
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss

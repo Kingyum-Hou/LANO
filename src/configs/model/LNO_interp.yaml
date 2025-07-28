@@ -1,0 +1,33 @@
+_target_: model_interface.LNOInterpModule
+params_model:
+  name: LNO
+  n_block: 8
+  n_mode: 256
+  n_dim: 256
+  n_head: 8
+  n_layer: 2
+  attn: Attention_Vanilla
+  act: GELU
+  x_dim: 2
+  y1_dim: 10
+  y2_dim: 10
+  model_attr: {'time':True}
+  hidden_size:
+  latent_num:
+  token_Mixer:
+  ntrain: ${datamodule.params_data.n_train_test[0]}
+  ntest:  ${datamodule.params_data.n_train_test[1]}
+  scale_factor: 2.
+  space_size: ${datamodule.params_data.space_size}
+  ref: 8
+  alpha: 1e-5
+  t: 10
+  downsample: ${datamodule.params_data.downsample}
+  monitor: train/full_loss
+  surrogate_ratio: 0.1
+  patch_size: ${datamodule.params_data.patch_size}
+  patch_num: ${datamodule.params_data.patch_num}
+
+params_optim: ${optim}
+
+params_scheduler: ${scheduler}
