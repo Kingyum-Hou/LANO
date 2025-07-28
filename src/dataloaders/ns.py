@@ -112,7 +112,19 @@ def get_NS(
         # cubic interp for train
         train_u, _ = cubicInterp(train_u, train_mask[..., 10:])
     elif task == "task2":
-        raise NotImplementedError
+        # train
+        train_au, train_mask = add_patch_missing(train_au, missing_rate, space_size, patch_size=patch_size)
+        train_a  = train_au[...,   :10]
+        train_u  = train_au[..., 10:  ]
+        # test
+        test_au_, test_mask = add_patch_missing(test_au, missing_rate, space_size, patch_size=patch_size)
+        test_a   = test_au_[...,   :10]
+        test_u   = test_au [..., 10:  ]
+        # cubic interp for train
+        train_u, _ = cubicInterp(train_u, train_mask[..., 10:])
+        # test high
+        test_au_high_, test_mask_high = add_patch_missing(test_au, missing_rate_high, space_size, patch_size=patch_size)
+        test_a_high   = test_au_high_[...,   :10]
     elif task == "task3":
         num_sampling      = int(np.round(missing_rate      * 4096))
         num_sampling_high = int(np.round(missing_rate_high * 4096))

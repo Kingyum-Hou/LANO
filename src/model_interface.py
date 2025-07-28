@@ -13,6 +13,7 @@ from models.Ours_S import OursLNOModel
 from models.Ours import OursLNOScoreModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
+from models.F_FNO import Model as F_FNO
 from models.LNO import LNO_triple
 from models.GNOT import Model as GNOT
 from tools import LpLoss, masked_loss_average, check_model_parameters_isnan, reshape2blocks, reshape2data, count_parameters, central_diff, rel_l2norm_loss
@@ -206,6 +207,8 @@ def get_model(cfg):
         )
     elif cfg.name == "GNOT":
         model = GNOT(cfg)
+    elif cfg.name == "F-FNO":
+        model = F_FNO(cfg)
     elif cfg.name == "Ours_old":
         model = OursModel(cfg)    
     elif cfg.name == "Ours":
@@ -448,6 +451,38 @@ class FNOModule(ModuleTemplate):
         return full_loss
 
 
+class FFNOModule(ModuleTemplate):
+    def step(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _, _,  To = yy.shape
+        pred_trajectory = []
+        loss = 0.
+        for t in range(0, To):
+            y = yy[..., t:t+1]
+            pred = self.model(pos, xx)
+            loss += self.criterion(pred.reshape(B, -1), y.reshape(B, -1))
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss, loss
+    
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _,  _, To = yy.shape
+        pred_trajectory = []
+        for t in range(0, To):
+            y = yy[..., t:t+1]
+            pred = self.model(pos, xx)
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss
+    
+    
 class MIONetModule(ModuleTemplate):
     def step(self, batch: Any):
         mask, pos, xx, yy, _, task = batch
