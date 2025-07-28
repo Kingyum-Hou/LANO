@@ -57,8 +57,8 @@ def get_ERA5(
         for i in range(0, data.shape[0]-14, 7):
             data_list.append(data[i:i+14, ...])
         data = torch.stack(data_list, dim=0).permute(0, 2, 3, 1)
-    data = (data - 273.15) / 30.
-
+    #data = (data - 273.15) / 30.
+    
     # train & test
     train_xy = data[:num_train, ...].reshape(num_train, -1, 14)
     test_xy  = data[-num_test:, ...].reshape(num_test,  -1, 14)
