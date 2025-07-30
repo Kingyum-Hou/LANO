@@ -3,7 +3,7 @@ params_data:
   name:         ERA5
   #data_dir:     /data/jingren/repository/dataset/WeatherBench/era5_temperature.grib
   data_dir:     /data/jingren/repository/dataset/WeatherBench/2m_temperature_18-25.grib
-  np_data_dir:  /root/autodl-tmp/era5_task34.npy
+  np_data_dir:  /data/jingren/repository/dataset/WeatherBench/era5_task34.npy
   data_mask_dir: /data/jingren/repository/dataset/HadCRUT_5/1_to_10_netcdf/HadCRUT.5.0.2.0.anomalies.1.nc
   task:         task3
   missing_rate: 0.5

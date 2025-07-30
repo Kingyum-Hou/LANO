@@ -713,6 +713,56 @@ class OursModule(ModuleTemplate):
         return full_loss
 
 
+class OursNoMPTModule(ModuleTemplate):
+    def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
+        super().__init__(params_model, params_optim, params_scheduler)
+        self.alpha = params_model.alpha
+        self.t     = params_model.t
+        self.surrogate_ratio = params_model.surrogate_ratio
+
+    def step(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW,Ti = xx.shape
+        _, _, To = yy.shape
+
+        mask_      = mask[..., 0].unsqueeze(dim=-1)
+        pred_trajectory = []
+        loss = 0.
+        curriculum_steps = self.get_curriculum_steps()
+        yy = yy[..., :curriculum_steps]
+        for t in range(0, curriculum_steps):
+            y     = yy[..., t:t+1]
+            pred  = self.model(pos_ref, xx, mask_)
+            loss += self.criterion(
+                torch.masked_select(pred, mask_.bool()).view(B, -1), 
+                torch.masked_select(y,    mask_.bool()).view(B, -1)
+            )
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], y], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(
+            torch.masked_select(pred, mask_.bool()).view(B, -1), 
+            torch.masked_select(yy,   mask_.bool()).view(B, -1)
+        )
+        #check_model_parameters_isnan(self.model)
+        return full_loss, loss
+    
+    def rollout(self, batch: Any):
+        mask, pos, xx, yy, pos_ref, task = batch
+        B, HW, Ti = xx.shape
+        _,  _, To = yy.shape
+
+        pred_trajectory = []
+        for t in range(0, To):
+            y    = yy[..., t:t+1]
+            pred = self.model(pos_ref, xx, mask[..., :1])
+            pred_trajectory.append(pred)
+            xx = torch.cat([xx[..., 1:], pred], dim=-1)
+        pred = torch.cat(pred_trajectory, dim=-1)
+        full_loss = self.criterion(pred.reshape(B, -1), yy.reshape(B, -1))
+        return full_loss
+    
+    
 class GNOTModule(ModuleTemplate):
     def __init__(self, params_model: DictConfig, params_optim: DictConfig, params_scheduler: DictConfig):
         super().__init__(params_model, params_optim, params_scheduler)
