@@ -1,8 +1,8 @@
 import torch
 from scipy import io as scio
 from model_interface import get_model
-from tools import get_pos, get_pos_ref
-from dataloaders.ns import add_point_missing
+from tools import get_pos_ref
+from tools import add_point_missing, add_patch_missing
 import numpy as np
 import matplotlib.pyplot as plt
 from tools import LpLoss
@@ -34,24 +34,24 @@ def loss_surrogate(psi1, psi2):
 
 class ModelParams():
     def __init__(self):
-        self.name = 'Ours'
+        self.name = 'Ours_S_P'
         self.input_size = 10
-        self.space_dim = [64, 64]
+        self.space_size = [64, 64]
         self.output_size = 1
         self.ref = 8
-        self.feature_basis_num = 32
+        self.scale_factor = 2.
+        self.latent_num = 256
         self.downsample = 1
         self.unified_pos = True
         self.Time_Input = False
-        self.slice_num = 32
-        self.kernel_layers = 8
+        self.kernel_layers = 12
         self.heads_num = 8
         self.head_size = 32
         self.hidden_size = 256
-        self.mlp_ratio = 1
+        self.token_Mixer="Attention"
 
 model = get_model(ModelParams()).to(device)
-model_path = 'logs/Ours_task3_0.5_Ours_reg9/checkpoints/best-v4.ckpt'
+model_path = '/root/ANOT/logs/NS_v-5/Ours_lno_task4_0.25_exp_ns_ours_lno_t4_mr25_layer12_bigPO_P8/checkpoints/best.ckpt'
 model_dict = torch.load(model_path, map_location=device)['state_dict']
 model_dict = {k.replace('model.', ''): v for k, v in model_dict.items()}
 print(model.load_state_dict(model_dict, strict=False))
@@ -68,13 +68,70 @@ data_path = '/root/autodl-tmp/NavierStokes_V1e-5_N1200_T20.mat'
 data = scio.loadmat(data_path)['u']
 test_au = torch.tensor(data[-200:, ::1, ::1, :20], dtype=torch.float).reshape(200, -1, 20)
 test_u = test_au[..., 10:]
-test_au_withMissing, test_mask = add_point_missing(test_au, int(np.round(4096*missing_rate)))
+#test_au_withMissing, test_mask = add_point_missing(test_au, int(np.round(4096*missing_rate)))
+test_au_withMissing, test_mask = add_patch_missing(test_au, missing_rate, [64, 64], patch_size=8)
 test_a = test_au_withMissing[..., :10]
-pos = get_pos_ref(64, 64, 8, batchsize=1).contiguous()
+pos = get_pos_ref(64, 64, 8).contiguous()
 test_pos = pos.repeat(200, 1, 1, 1).reshape(200, -1, 8*8)
 
 test_data = [test_mask, test_pos, test_a, test_u]
 test_dataloader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(*test_data), batch_size=10, shuffle=False)
+
+# eval print latent score
+data_batch = next(iter(test_dataloader))
+data_batch = next(iter(test_dataloader))
+with torch.no_grad():
+    mask, pos, xx, yy = [x.to(device) for x in data_batch]
+    pred_trajectory = []
+    y = yy[..., 0:1]
+    pred, score_list, mask_list, y_list = model(pos, xx, mask[..., :1])
+    pred_trajectory.append(pred)
+    xx = torch.cat([xx[..., 1:], pred], dim=-1)
+    pred = torch.cat(pred_trajectory, dim=-1)
+    print(score_list[0].shape)
+
+fig, axes = plt.subplots(1, 12, figsize=(60, 5), dpi=318)
+d_arrange = 23
+#j = 5
+j = 0
+for i in range(6):
+    axes[i].imshow(y_list[i][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i].imshow(np.where(mask_list[i][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i].axis('off')
+for i in range(6):
+    axes[i+6].imshow(y_list[i+6][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i+6].imshow(np.where(mask_list[i+6][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i+6].axis('off')
+#plt.savefig("1.png", bbox_inches="tight", pad_inches=0)
+plt.savefig("1.png")
+
+d_arrange = 200
+#j = 5
+j = 0
+for i in range(6):
+    axes[i].imshow(score_list[i][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i].imshow(np.where(mask_list[i][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i].axis('off')
+for i in range(6):
+    axes[i+6].imshow(score_list[i+6][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i+6].imshow(np.where(mask_list[i+6][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i+6].axis('off')
+#plt.savefig("1.png", bbox_inches="tight", pad_inches=0)
+plt.savefig("2.png")
+
+d_arrange = 20
+#j = 5
+j = 9
+for i in range(6):
+    axes[i].imshow(score_list[i][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i].imshow(np.where(mask_list[i][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i].axis('off')
+for i in range(6):
+    axes[i+6].imshow(score_list[i+6][j, ..., d_arrange].cpu().numpy().reshape(64,64), cmap='viridis')
+    axes[i+6].imshow(np.where(mask_list[i+6][j, ..., 0].cpu().numpy().reshape(64,64) == 0, 0, np.inf), cmap='binary', alpha=1, vmin=0, vmax=1)
+    axes[i+6].axis('off')
+#plt.savefig("1.png", bbox_inches="tight", pad_inches=0)
+plt.savefig("3.png")
 
 # eval
 loss_func = LpLoss(size_average=False)
@@ -114,7 +171,7 @@ with torch.no_grad():
                 axes[2, i].set_title(f'Time {i+1}_error')
                 axes[2, i].axis('off')
             plt.show()
-            plt.savefig(f'imgs/TransolverPro_{batch_idx}.png')
+            plt.savefig(f'imgs/Ours_{batch_idx}.png')
             plt.clf()
             #plot_flag = False
 print('ok!')

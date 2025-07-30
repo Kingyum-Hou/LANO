@@ -11,6 +11,7 @@ from models.FNO import FNO2d
 from models.Ours_old import OursModel
 from models.Ours_S import OursLNOModel
 from models.Ours_S_P import OursLNOModel as OursLNOPModel
+from models.Ours_P import OursLNOScoreModel as OursPModel
 from models.Ours import OursLNOScoreModel
 from models.MIONet import MIONet_periodic as MIONet
 from models.OFormer import OFormer
@@ -218,6 +219,8 @@ def get_model(cfg):
         model = OursLNOModel(cfg)
     elif cfg.name == "Ours_S_P":
         model = OursLNOPModel(cfg)
+    elif cfg.name == "Ours_P":
+        model = OursPModel(cfg)
     else:
         raise NotImplementedError
     return model
