@@ -18,8 +18,13 @@ params_model:
   output_scale:   0.1
   latent_init_scale:   0.02
   ref: 8
-  ntrain: ${datamodule.n_train_test[0]}
-  ntest:  ${datamodule.n_train_test[1]}
+  hidden_size:
+  latent_num:
+  token_Mixer:
+  ntrain: ${datamodule.params_data.n_train_test[0]}
+  ntest:  ${datamodule.params_data.n_train_test[1]}
   monitor: train/full_loss
+  patch_size: ${datamodule.params_data.patch_size}
+  patch_num: ${datamodule.params_data.patch_num}
 params_optim: ${optim}
 params_scheduler: ${scheduler}
