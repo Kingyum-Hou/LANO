@@ -34,7 +34,7 @@ def loss_surrogate(psi1, psi2):
 
 class ModelParams():
     def __init__(self):
-        self.name = 'Ours_P'
+        self.name = 'Ours_S_P'
         self.input_size = 10
         self.space_size = [64, 64]
         self.output_size = 1
