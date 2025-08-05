@@ -211,8 +211,6 @@ def get_model(cfg):
         model = GNOT(cfg)
     elif cfg.name == "F-FNO":
         model = F_FNO(cfg)
-    elif cfg.name == "Ours_old":
-        model = OursModel(cfg)    
     elif cfg.name == "Ours":
         model = OursLNOScoreModel(cfg)
     elif cfg.name == "Ours_S":

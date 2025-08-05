@@ -175,3 +175,6 @@ scripts/*
 scripts_backup
 launch.json
 *.npy
+172*
+*.txt
+MPT*
